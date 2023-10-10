@@ -189,8 +189,8 @@ def init_repo(
     """
     Initialize a repository under the current path.
     """
-    if os.path.exists(repo_path):
-        raise FileExistsError(f'Repository {repo_path} already exists')
+    if os.path.exists(repo_path) and len(os.listdir(repo_path)) != 0:
+        raise FileExistsError(f'Repository {repo_path} already exists and is not empty')
 
     new_config = dict()
     if project_type == ProjectType.MAIN:

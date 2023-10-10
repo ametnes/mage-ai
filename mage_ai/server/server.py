@@ -88,6 +88,9 @@ from mage_ai.settings import (
     SERVER_VERBOSITY,
     SHELL_COMMAND,
     USE_UNIQUE_TERMINAL,
+    ADMIN_EMAIL,
+    ADMIN_USER,
+    ADMIN_PASSWORD
 )
 from mage_ai.settings.repo import DEFAULT_MAGE_DATA_DIR, get_repo_name, set_repo_path
 from mage_ai.shared.constants import InstanceType
@@ -419,18 +422,20 @@ async def main(
         if not legacy_owner_user and len(owner_users) == 0:
             logger.info('User with owner permission doesn’t exist, creating owner user.')
             if AUTHENTICATION_MODE.lower() == 'ldap':
+                logger.info(f'Creating ldap user {LDAP_ADMIN_USERNAME}.')
                 user = User.create(
                     roles_new=[default_owner_role],
                     username=LDAP_ADMIN_USERNAME,
                 )
             else:
+                logger.info(f'Creating user {ADMIN_USER}/{ADMIN_EMAIL}')
                 password_salt = generate_salt()
                 user = User.create(
-                    email='admin@admin.com',
-                    password_hash=create_bcrypt_hash('admin', password_salt),
+                    email=ADMIN_EMAIL,
+                    password_hash=create_bcrypt_hash(ADMIN_PASSWORD, password_salt),
                     password_salt=password_salt,
                     roles_new=[default_owner_role],
-                    username='admin',
+                    username=ADMIN_USER,
                 )
             owner_user = user
         else:
@@ -504,11 +509,12 @@ def start_server(
 
     # Set project path in environment variable
     if project:
-        project = os.path.abspath(project)
+        if not os.path.exists(project):
+            project = os.path.abspath(project)
     else:
         project = os.path.join(os.getcwd(), 'default_repo')
 
-    if not os.path.exists(project):
+    if not os.path.exists(project) or len(os.listdir(project)) == 0:
         init_repo(
             project,
             project_type=project_type,
@@ -566,7 +572,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--host', type=str, default=None)
     parser.add_argument('--port', type=str, default=None)
-    parser.add_argument('--project', type=str, default=None)
+    parser.add_argument('--home', type=str, default=os.getenv('PROJECT_HOME'))
+    parser.add_argument('--project', type=str, default=os.getenv('PROJECT_NAME'))
     parser.add_argument('--manage-instance', type=str, default='0')
     parser.add_argument('--dbt-docs-instance', type=str, default='0')
     parser.add_argument('--instance-type', type=str, default='server_and_scheduler')
@@ -574,6 +581,7 @@ if __name__ == '__main__':
 
     host = args.host
     port = args.port
+    home = args.home
     project = args.project
     manage = args.manage_instance == '1'
     dbt_docs = args.dbt_docs_instance == '1'
@@ -584,6 +592,7 @@ if __name__ == '__main__':
     start_server(
         host=host,
         port=port,
+        home=home,
         project=project,
         manage=manage,
         dbt_docs=dbt_docs,

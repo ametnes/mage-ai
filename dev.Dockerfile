@@ -59,9 +59,9 @@ RUN \
   rm /tmp/requirements.txt
 
 ## Mage Frontend
-COPY ./mage_ai /home/src/mage_ai
-WORKDIR /home/src/mage_ai/frontend
+COPY ./mage_ai /home/mage_ai
+WORKDIR /home/mage_ai/frontend
 RUN yarn install && yarn cache clean
 
-ENV PYTHONPATH="${PYTHONPATH}:/home/src"
-WORKDIR /home/src
+ENV PYTHONPATH="${PYTHONPATH}:/home"
+WORKDIR /home
