@@ -1,5 +1,6 @@
 import { TabType } from '@oracle/components/Tabs/ButtonTabs';
 
+export const ACTION_CLONE = 'clone';
 export const ACTION_DELETE = 'delete';
 export const ACTION_FETCH = 'fetch';
 export const ACTION_MERGE = 'merge';
@@ -16,13 +17,13 @@ export const TAB_BRANCHES = {
   uuid: 'Branches',
 };
 export const TAB_FILES = {
-  uuid: 'Files',
+  uuid: 'Commit',
 };
 export const TAB_PUSH = {
-  uuid: 'Push',
+  uuid: 'Push & Pull Requests',
 };
 export const TAB_REMOTE = {
-  uuid: 'Setup',
+  uuid: 'Remote & Auth',
 };
 
 export const TABS: TabType[] = [

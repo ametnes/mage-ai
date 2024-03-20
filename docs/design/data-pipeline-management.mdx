@@ -236,9 +236,10 @@ concurrency_config:
   block_run_limit: 5
   pipeline_run_limit: 3
 ```
-* `block_run_limit` is to limit the concurrent blocks runs in one pipeline run.
-* `pipeline_run_limit` is to limit the concurrent pipeline runs in one pipeline trigger.
-
+* `block_run_limit`: limit the concurrent blocks runs in one pipeline run.
+* `pipeline_run_limit`: limit the concurrent pipeline runs in one pipeline trigger.
+* `pipeline_run_limit_all_triggers`: limit the concurrent pipeline runs across all trigers in a pipeline.
+* `on_pipeline_run_limit_reached`: choose whether to `wait` or `skip` when the pipeline run limit is reached.
 
 ## Variable storage
 Mage automatically persists the output of block runs on disk. You can specify the path or the storage for block output variables
@@ -262,6 +263,10 @@ in the following ways.
     variables_dir: /home/src/mage_data
     remote_variables_dir: gs://bucket/path_prefix
     ```
+    When using GCS for your remote variables directory, if you run into a "Your default credentials were not found"
+    error, you may need to set the `GOOGLE_APPLICATION_CREDENTIALS` environment variable to the path of your
+    `application_default_credentials.json` file with your Google Cloud credentials and the `GOOGLE_CLOUD_PROJECT`
+    environment variable to your Google Cloud project ID.
 
 ## Variable retention
 If you want to clean up the old variables in your variable storage, you can set the `variables_retention_period`
@@ -276,4 +281,16 @@ After configuring `variables_retention_period` in project's metadata.yaml, you c
 to clean up old variables:
 ```bash
 mage clean-cached-variables [project_path]
+```
+
+## Cache block output in memory
+
+By default, Mage persists block output on disk. In pipeline's metadata.yaml, you have the option to configure the pipeline to cache
+the block output in memory instead of persisting the block output on disk. The feature is only supported in standard batch
+pipeline (without dynamic blocks) for now.
+
+Example config:
+```yaml
+cache_block_output_in_memory: true
+run_pipeline_in_one_process: true
 ```

@@ -1,42 +1,66 @@
-import { toast } from 'react-toastify';
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
 
 import BasePage from '@components/BasePage';
+import ClickOutside from '@oracle/components/ClickOutside';
+import ErrorPopup from '@components/ErrorPopup';
 import api from '@api';
-import { LOCAL_STORAGE_KEY_OAUTH_STATE, get } from '@storage/localStorage';
+import { get, remove } from '@storage/localStorage';
 import { queryFromUrl } from '@utils/url';
 
 function OauthPage() {
   const router = useRouter();
   const query = queryFromUrl();
 
-  const provider = query?.provider;
+  const state = query?.state;
+  const localState = get(state);
+  const provider = localState?.provider;
 
-  const { data: dataOauth } = api.oauths.detail(provider, query);
+  let newQuery = query;
+  if (localState) {
+    newQuery = {
+      ...query,
+      ...localState,
+    };
+  }
+
+  const { data: dataOauth } = api.oauths.detail(provider, newQuery);
   const oauthUrl = useMemo(() => dataOauth?.oauth?.url, [dataOauth]);
 
+  const [errorMessage, setErrorMessage] = useState(null);
+
   useEffect(() => {
-    const state = query?.state;
-    const localState = get(LOCAL_STORAGE_KEY_OAUTH_STATE);
-    if (oauthUrl && state === localState) {
-      // console.log('oauth url:', oauthUrl);
-      router.push(oauthUrl);
-    } else if (state !== localState) {
-      toast.error(
-        'Oauth failed due to state not matching!',
-        {
-          position: toast.POSITION.BOTTOM_RIGHT,
-          toastId: 'oauth-state-error',
-        },
-      );
+    if (oauthUrl) {
+      const oauthQuery = queryFromUrl(oauthUrl);
+      const { error } = oauthQuery || {};
+      if (error) {
+        setErrorMessage(error);
+      } else if (localState) {
+        remove(state);
+        router.push(oauthUrl);
+      } else if (!localState) {
+        setErrorMessage('Oauth failed due to state not matching!');
+      }
     }
-  }, [oauthUrl, router, query]);
+  }, [localState, oauthUrl, router, query, state]);
   
 
   return (
     <BasePage title="Oauth">
       <></>
+
+      {errorMessage && (
+        <ClickOutside
+          disableClickOutside
+          isOpen
+          onClickOutside={() => setErrorMessage?.(null)}
+        >
+          <ErrorPopup
+            displayMessage={errorMessage}
+            onClose={() => setErrorMessage?.(null)}
+          />
+        </ClickOutside>
+      )}
     </BasePage>
   );
 }

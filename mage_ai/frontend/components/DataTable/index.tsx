@@ -72,6 +72,7 @@ type TableProps = {
 
 type DataTableProps = {
   columns: string[];
+  disableZeroIndexRowNumber?: boolean;
   noBorderBottom?: boolean;
   noBorderLeft?: boolean;
   noBorderRight?: boolean;
@@ -417,13 +418,15 @@ function Table({
       } else {
         val += BASE_ROW_HEIGHT - REGULAR_LINE_HEIGHT;
       }
-    } else {
+    } else if (height) {
       val = height;
       if (columnHeaderHeight) {
         val -= columnHeaderHeight;
       } else {
         val -= BASE_ROW_HEIGHT;
       }
+    } else {
+      return 0;
     }
 
     return val;
@@ -530,6 +533,7 @@ function DataTable({
   columnHeaderHeight,
   columns: columnsProp,
   disableScrolling,
+  disableZeroIndexRowNumber,
   height,
   index,
   invalidValues,
@@ -557,7 +561,7 @@ function DataTable({
 
   const columns = useMemo(() => range(numberOfIndexes).map((i: number, idx: number) => ({
     Header: range(idx + 1).map(() => ' ').join(' '),
-    accessor: (row, i) => i,
+    accessor: (row, i) => i + (disableZeroIndexRowNumber ? 1 : 0),
     sticky: 'left',
     // @ts-ignore
   })).concat(columnsProp?.map(col => ({
@@ -565,6 +569,7 @@ function DataTable({
     accessor: String(col),
   }))), [
     columnsProp,
+    disableZeroIndexRowNumber,
     numberOfIndexes,
   ]);
 

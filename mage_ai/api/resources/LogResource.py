@@ -1,5 +1,7 @@
 from datetime import datetime
 from typing import Dict, List
+
+from sqlalchemy import or_
 from sqlalchemy.orm import aliased
 
 from mage_ai.api.operations.constants import META_KEY_LIMIT
@@ -15,8 +17,10 @@ from mage_ai.orchestration.db.models.schedules import (
     PipelineRun,
     PipelineSchedule,
 )
+from mage_ai.server.logger import Logger
 
 MAX_LOG_FILES = 20
+server_logger = Logger().new_server_logger(__name__)
 
 
 class LogResource(GenericResource):
@@ -146,10 +150,11 @@ class LogResource(GenericResource):
                 model.pipeline_uuid = row.pipeline_uuid
                 model.variables = row.variables
                 logs = await model.logs_async()
-                pipeline_log_file_path = logs.get('path')
-                if pipeline_log_file_path not in processed_pipeline_run_log_files:
-                    pipeline_run_logs.append(logs)
-                    processed_pipeline_run_log_files.add(pipeline_log_file_path)
+                for logs_item in logs:
+                    pipeline_log_file_path = logs_item.get('path')
+                    if pipeline_log_file_path not in processed_pipeline_run_log_files:
+                        pipeline_run_logs.append(logs_item)
+                        processed_pipeline_run_log_files.add(pipeline_log_file_path)
                 if len(pipeline_run_logs) >= MAX_LOG_FILES:
                     break
 
@@ -167,9 +172,13 @@ class LogResource(GenericResource):
             )
 
             if len(block_uuids):
+                ors = []
+                for block_uuid in block_uuids:
+                    ors.append(c.block_uuid.like(f'{block_uuid}%'))
+
                 query = (
                     query.
-                    filter(c.block_uuid.in_(block_uuids))
+                    filter(or_(*ors))
                 )
 
             if len(block_run_ids):
@@ -231,7 +240,7 @@ class LogResource(GenericResource):
             model2.block_uuid = row.block_uuid
             model2.pipeline_run = model
 
-            logs = await model2.logs_async()
+            logs = await model2.logs_async(repo_path=pipeline.repo_path if pipeline else None)
             block_log_file_path = logs.get('path')
             if block_log_file_path not in processed_block_run_log_files:
                 block_run_logs.append(logs)
@@ -258,7 +267,7 @@ class LogResource(GenericResource):
                     if end_timestamp:
                         should_add = should_add and dsts <= end_timestamp
                 except ValueError as err:
-                    print(f'[WARNING] LogResource.__filter: {err}')
+                    server_logger.warning(f'__filter: {err}')
                     should_add = False
 
                 return should_add

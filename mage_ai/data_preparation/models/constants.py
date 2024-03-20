@@ -18,10 +18,16 @@ DATAFRAME_SAMPLE_MAX_COLUMNS = 1000
 LOGS_DIR = '.logs'
 MAX_PRINT_OUTPUT_LINES = int(os.getenv('MAX_PRINT_OUTPUT_LINES', 1000) or 1000)
 PIPELINE_CONFIG_FILE = 'metadata.yaml'
+PIPELINE_MAX_FILE_SIZE = 500000  # maximum size of a pipeline import zip in kb (500Mb)
 PIPELINES_FOLDER = 'pipelines'
 PREFERENCES_FILE = '.preferences.yaml'
 REPO_CONFIG_FILE = 'metadata.yaml'
 VARIABLE_DIR = '.variables'
+
+
+class AIMode(str, Enum):
+    OPEN_AI = 'open_ai'
+    HUGGING_FACE = 'hugging_face'
 
 
 class BlockLanguage(str, Enum):
@@ -47,8 +53,10 @@ class BlockType(str, Enum):
     DATA_EXPORTER = 'data_exporter'
     DATA_LOADER = 'data_loader'
     DBT = 'dbt'
+    DYNAMIC_CHILD = 'dynamic_child'
     EXTENSION = 'extension'
     GLOBAL_DATA_PRODUCT = 'global_data_product'
+    HOOK = 'hook'
     MARKDOWN = 'markdown'
     SCRATCHPAD = 'scratchpad'
     SENSOR = 'sensor'
@@ -141,3 +149,18 @@ NON_PIPELINE_EXECUTABLE_BLOCK_TYPES = [
 ]
 
 PYTHON_COMMAND = 'python3'
+
+
+SINGULAR_FOLDER_BLOCK_TYPES = [
+    BlockType.CUSTOM,
+]
+
+BLOCK_TYPE_DIRECTORY_NAME = \
+    {v: f'{v.value}s' for v in BlockType if v not in SINGULAR_FOLDER_BLOCK_TYPES}
+
+
+PIPELINE_TYPE_DISPLAY_NAME_MAPPING = {
+    PipelineType.INTEGRATION: 'Data integration',
+    PipelineType.PYTHON: 'Batch',
+    PipelineType.STREAMING: 'Streaming',
+}

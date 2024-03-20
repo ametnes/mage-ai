@@ -28,6 +28,7 @@ export type FetcherOptionsType = {
   }) => void;
   query?: any;
   responseType?: ResponseType;
+  signal?: any;
   token?: string;
 };
 
@@ -61,10 +62,10 @@ function preprocess(url: string, opts: FetcherOptionsType = {}) {
         type,
       } = file;
       const formData = new FormData();
-      const key: string = Object.keys(body).filter(k => k !== 'file')[0];
+      const bodyWithoutFile = Object.fromEntries(Object.entries(body).filter(([k]) => k !== 'file'));
       const jsonRootBody = JSON.stringify({
         api_key: API_KEY,
-        [key]: body[key],
+        ...bodyWithoutFile,
       });
       formData.set(
         'json_root_body',
@@ -122,6 +123,11 @@ export function buildFetch(urlArg: string, opts: FetcherOptionsType = {}) {
 
 export function buildFetchV2(urlArg: string, opts: FetcherOptionsType = {}) {
   const {
+    signal,
+  } = opts || {
+    signal: null,
+  };
+  const {
     data,
     headers,
     method,
@@ -149,6 +155,7 @@ export function buildFetchV2(urlArg: string, opts: FetcherOptionsType = {}) {
       })
       : null,
     responseType,
+    signal,
     url: finalUrl,
   });
 }

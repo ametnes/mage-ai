@@ -196,6 +196,20 @@ TEMPLATES_ONLY_FOR_V2 = [
         block_type=BlockType.DATA_LOADER,
         groups=[GROUP_DATABASES],
         language=BlockLanguage.PYTHON,
+        name='Algolia',
+        path='data_loaders/algolia.py',
+    ),
+    dict(
+        block_type=BlockType.DATA_LOADER,
+        groups=[GROUP_DATABASES],
+        language=BlockLanguage.PYTHON,
+        name='Chroma',
+        path='data_loaders/chroma.py',
+    ),
+    dict(
+        block_type=BlockType.DATA_LOADER,
+        groups=[GROUP_DATABASES],
+        language=BlockLanguage.PYTHON,
         name='DuckDB',
         path='data_loaders/duckdb.py',
     ),
@@ -222,6 +236,20 @@ TEMPLATES_ONLY_FOR_V2 = [
     ),
     dict(
         block_type=BlockType.DATA_LOADER,
+        groups=[GROUP_DATABASES],
+        language=BlockLanguage.PYTHON,
+        name='Qdrant',
+        path='data_loaders/qdrant.py',
+    ),
+    dict(
+        block_type=BlockType.DATA_LOADER,
+        groups=[GROUP_DATABASES],
+        language=BlockLanguage.PYTHON,
+        name='Weaviate',
+        path='data_loaders/weaviate.py',
+    ),
+    dict(
+        block_type=BlockType.DATA_LOADER,
         description='Fetch data from an API request.',
         language=BlockLanguage.PYTHON,
         name='API',
@@ -233,6 +261,13 @@ TEMPLATES_ONLY_FOR_V2 = [
         language=BlockLanguage.PYTHON,
         name='Local file',
         path='data_loaders/file.py',
+    ),
+    dict(
+        block_type=BlockType.DATA_LOADER,
+        description='Load data from a worksheet in Google Sheets.',
+        language=BlockLanguage.PYTHON,
+        name='Google Sheets',
+        path='data_loaders/google_sheets.py',
     ),
     dict(
         block_type=BlockType.DATA_LOADER,
@@ -494,6 +529,12 @@ TEMPLATES_ONLY_FOR_V2 = [
         name='Local file',
         path='data_exporters/file.py',
     ),
+    dict(
+        block_type=BlockType.DATA_EXPORTER,
+        language=BlockLanguage.PYTHON,
+        name='Google Sheets',
+        path='data_exporters/google_sheets.py',
+    ),
     #   Data lakes
     dict(
         block_type=BlockType.DATA_EXPORTER,
@@ -543,6 +584,20 @@ TEMPLATES_ONLY_FOR_V2 = [
         block_type=BlockType.DATA_EXPORTER,
         groups=[GROUP_DATABASES],
         language=BlockLanguage.PYTHON,
+        name='Algolia',
+        path='data_exporters/algolia.py',
+    ),
+    dict(
+        block_type=BlockType.DATA_EXPORTER,
+        groups=[GROUP_DATABASES],
+        language=BlockLanguage.PYTHON,
+        name='Chroma',
+        path='data_exporters/chroma.py',
+    ),
+    dict(
+        block_type=BlockType.DATA_EXPORTER,
+        groups=[GROUP_DATABASES],
+        language=BlockLanguage.PYTHON,
         name='DuckDB',
         path='data_exporters/duckdb.py',
     ),
@@ -559,6 +614,20 @@ TEMPLATES_ONLY_FOR_V2 = [
         language=BlockLanguage.PYTHON,
         name='PostgreSQL',
         path='data_exporters/postgres.py',
+    ),
+    dict(
+        block_type=BlockType.DATA_EXPORTER,
+        groups=[GROUP_DATABASES],
+        language=BlockLanguage.PYTHON,
+        name='Qdrant',
+        path='data_exporters/qdrant.py',
+    ),
+    dict(
+        block_type=BlockType.DATA_EXPORTER,
+        groups=[GROUP_DATABASES],
+        language=BlockLanguage.PYTHON,
+        name='Weaviate',
+        path='data_exporters/weaviate.py',
     ),
     # Sensors
     dict(

@@ -1,8 +1,7 @@
 import os
 import shlex
 from logging import Logger
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Optional, Union
 
 import simplejson
 from jinja2 import Template
@@ -10,14 +9,20 @@ from jinja2 import Template
 from mage_ai.data_preparation.models.block.dbt import DBTBlock
 from mage_ai.data_preparation.models.block.dbt.dbt_cli import DBTCli
 from mage_ai.data_preparation.models.block.dbt.profiles import Profiles
-from mage_ai.data_preparation.models.block.dbt.project import Project
 from mage_ai.data_preparation.shared.utils import get_template_vars
+from mage_ai.data_preparation.templates.utils import get_variable_for_template
 from mage_ai.orchestration.constants import PIPELINE_RUN_MAGE_VARIABLES_KEY
+from mage_ai.settings.repo import get_repo_path
+from mage_ai.shared.custom_logger import DX_PRINTER
+from mage_ai.shared.files import (
+    find_file_from_another_file_path,
+    get_full_file_paths_containing_item,
+)
 from mage_ai.shared.hash import merge_dict
+from mage_ai.shared.path_fixer import add_absolute_path
 
 
 class DBTBlockYAML(DBTBlock):
-
     @property
     def project_path(self) -> Union[str, os.PathLike]:
         """
@@ -26,68 +31,63 @@ class DBTBlockYAML(DBTBlock):
         Returns:
             Union[str, os.PathLike]: Path of the dbt project, being used
         """
-        project_name = self.configuration.get('dbt_project_name')
-        if project_name:
-            return str(Path(self.base_project_path) / project_name)
+        # Example:
+        # demo
+        # default_repo/dbt/demo
 
-    def tags(self) -> List[str]:
-        """
-        Get the tags associated with the DBT block.
+        # if self.configuration.get(''dbt_project_path''):
+        #     return add_absolute_path(self.configuration.get(''dbt_project_path''))
 
-        Returns:
-            List[str]: The list of tags.
-        """
-        arr = super().tags()
-        command = self._dbt_configuration.get('command', 'run')
-        if command:
-            arr.append(command)
-        return arr
+        file_path = None
+        for key in [
+            'dbt_profiles_file_path',
+            'dbt_project_name',
+        ]:
+            if not file_path and self.configuration.get(key):
+                path = add_absolute_path(self.configuration.get(key))
+                file_path = find_file_from_another_file_path(
+                    path,
+                    lambda x: os.path.basename(x) in [
+                        'dbt_project.yml',
+                        'dbt_project.yaml',
+                    ],
+                )
+                if file_path:
+                    return os.path.dirname(file_path)
 
-    async def metadata_async(self) -> Dict[str, Any]:
-        """
-        Retrieves metadata needed to configure the block.
-        - available local dbt projects
-        - target to use and other target of the local dbt projects
+        if file_path is None and self.configuration and self.configuration.get('dbt_project_name'):
+            file_paths = get_full_file_paths_containing_item(
+                os.path.join(
+                    get_repo_path(root_project=False),
+                    'dbt',
+                    self.configuration.get('dbt_project_name'),
+                ),
+                lambda x: x and (
+                    str(x).endswith('dbt_project.yml') or
+                    str(x).endswith('dbt_project.yaml'),
+                ),
+            )
+            if file_paths:
+                file_path = file_paths[0]
+                return os.path.dirname(file_path)
 
-        Returns:
-            Dict: The metadata of the DBT block.
-        """
-        projects = {}
+    def set_default_configurations(self):
+        self.configuration = self.configuration or {}
+        if not self.configuration.get('file_source'):
+            self.configuration['file_source'] = {}
 
-        project_dirs = Project(self.base_project_path).local_packages
-        for project_dir in project_dirs:
-            project_full_path = str(Path(self.base_project_path) / project_dir)
+        pp = self.project_path
+        if pp:
+            self.configuration['file_source']['project_path'] = add_absolute_path(
+                pp,
+                add_base_repo_path=False,
+            )
 
-            project = Project(project_full_path).project
-            project_name = project.get('name')
-            project_profile = project.get('profile')
-
-            # ignore exception if no profiles.yml is found.
-            # Just means that the targets have no option
-            try:
-                profiles = Profiles(
-                    project_full_path,
-                    self.pipeline.variables if self.pipeline else None
-                ).profiles
-            except FileNotFoundError:
-                profiles = None
-            profile = profiles.get(project_profile) if profiles else None
-            target = profile.get('target') if profile else None
-            targets = sorted(list(profile.get('outputs').keys())) if profile else None
-
-            projects[project_dir] = {
-                'project_name': project_name,
-                'target': target,
-                'targets': targets,
-            }
-
-        return {
-            'dbt': {
-                'block': {},
-                'project': None,
-                'projects': projects
-            }
-        }
+        if not self.configuration['file_source'].get('path'):
+            self.configuration['file_source']['path'] = add_absolute_path(
+                self.file_path,
+                add_base_repo_path=False,
+            )
 
     def _execute_block(
         self,
@@ -106,17 +106,27 @@ class DBTBlockYAML(DBTBlock):
             runtime_arguments (Optional[Dict[str, Any]], optional): The runtime arguments.
         """
         # Which dbt task should be executed
+        DX_PRINTER.label = 'DBTYamlBlock'
+
         task = self._dbt_configuration.get('command', 'run')
+
+        # Get variables
+        variables = merge_dict(global_vars, runtime_arguments or {})
+
+        content = self.content or ''
+        content = self.interpolate_content(
+            content,
+            outputs_from_input_vars=outputs_from_input_vars,
+            variables=variables,
+            **kwargs,
+        )
 
         # Get args from block content and split them by word, just like a shell does
         # This handles quoting correctly, e.g. when supplying a json string
-        args = shlex.split(self.content)
+        args = shlex.split(content)
 
         # Set project-dir argument for invoking dbt
         args += ["--project-dir", self.project_path]
-
-        # Get varaibles
-        variables = merge_dict(global_vars, runtime_arguments or {})
 
         # Set flags and prefix/suffix from runtime_configuration
         # e.g. setting --full-refresh
@@ -135,15 +145,28 @@ class DBTBlockYAML(DBTBlock):
             vars_index = args.index('--vars') + 1
         except Exception:
             pass
+
+        DX_PRINTER.debug(
+            f'execute block content: {content}',
+            block=self,
+            args=args,
+            file_path=self.file_path,
+            project_path=self.project_path,
+        )
+
         if vars_index:
-            vars = Template(args[vars_index]).render(
-                variables=lambda x: variables.get(x) if variables else None,
+            variables2 = Template(args[vars_index]).render(
+                variables=lambda x, p=None, v=variables: get_variable_for_template(
+                    x,
+                    parse=p,
+                    variables=v,
+                ),
                 **get_template_vars(),
             )
             args[vars_index] = self._variables_json(merge_dict(
                 variables,
                 # manual vars second, as these update the automatically interpolated vars
-                simplejson.loads(vars),
+                simplejson.loads(variables2),
             ))
         else:
             args += ['--vars', self._variables_json(variables)]
@@ -162,6 +185,11 @@ class DBTBlockYAML(DBTBlock):
             args += ([
                 "--profiles-dir", str(profiles.profiles_dir)
             ])
-            _res, success = DBTCli([task] + args, logger).invoke()
-            if not success:
-                raise Exception('DBT exited with a non 0 exit status.')
+
+            cli = DBTCli(logger=logger)
+
+            cli.invoke(['deps'] + args)
+
+            res = cli.invoke([task] + args)
+            if not res.success:
+                raise Exception(str(res.exception))

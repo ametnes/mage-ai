@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 
-import BlockType, { BlockLanguageEnum, BlockTypeEnum } from '@interfaces/BlockType';
+import BlockType, { BlockLanguageEnum, BlockTypeEnum, TagEnum } from '@interfaces/BlockType';
 import PipelineType, { PipelineTypeEnum } from '@interfaces/PipelineType';
 import {
   BreadcrumbEnum,
@@ -338,7 +338,7 @@ export function mergeSchemaProperties(
 
   function updateNewColumnSettings(column, data) {
     if (!newColumnSettings?.[column]) {
-      newColumnSettings[column] = {}
+      newColumnSettings[column] = {};
     }
 
     newColumnSettings[column] = {
@@ -358,8 +358,10 @@ export function mergeSchemaProperties(
 
     // Existing column
     if (settings2) {
-      const t1 = settings1?.type || [];
-      const t2 = settings2?.type || [];
+      let t1 = settings1?.type || [];
+      t1 = Array.isArray(t1) ? t1 : [t1];
+      let t2 = settings2?.type || [];
+      t2 = Array.isArray(t2) ? t2 : [t2];
       if (!equals(t1, t2)) {
         updateNewColumnSettings(column, {
           type: t1,
@@ -536,7 +538,7 @@ export function getStreamMetadataByColumn(stream: StreamType): {
     }
 
     return acc;
-  }, {})
+  }, {});
 }
 
 export function getColumnFromMetadata(metadata: MetadataType): string {
@@ -596,15 +598,15 @@ export function addTypesToProperty(
   property: PropertyColumnMoreType,
 ) {
   const {
-    type: types,
+    type: types = [],
     typesDerived: typesDerived1,
   } = property || {};
   const property2 = {
     ...property,
   };
-
-  let types2 = [...types];
-  let typesDerived2 = [...typesDerived1];
+  const typesArr = !Array.isArray(types) ? [types] : types;
+  const types2 = [...typesArr];
+  const typesDerived2 = [...typesDerived1];
 
   typesDerivedToAdd?.forEach((td) => {
     if (COLUMN_TYPE_CUSTOM_DATE_TIME === td) {
@@ -634,14 +636,15 @@ export function removeTypesFromProperty(
 ) {
   const {
     format,
-    type: types,
+    type: types = [],
     typesDerived: typesDerived1,
   } = property || {};
   const property2 = {
     ...property,
   };
 
-  let types2 = [...types];
+  const typesArr = !Array.isArray(types) ? [types] : types;
+  let types2 = [...typesArr];
   let typesDerived2 = [...typesDerived1];
 
   typesDerivedToRemove?.forEach((td) => {
@@ -673,10 +676,18 @@ export function hydrateProperty(
     type: types = [],
   } = property || {};
 
-  const typesDerived = types?.filter(i => ![
+  let typesArr = types;
+  if (!Array.isArray(types)) {
+    if (!types) {
+      typesArr = [];
+    } else {
+      typesArr = [types];
+    }
+  }
+  const typesDerived = typesArr?.filter(i => ![
     COLUMN_TYPE_CUSTOM_DATE_TIME,
     ColumnFormatEnum.UUID,
-  ]?.includes(i))
+  ]?.includes(i));
 
   if (ColumnFormatMapping[format]) {
     if (!typesDerived?.includes(ColumnFormatMapping[format])) {
@@ -705,7 +716,7 @@ export function groupStreamsForTables(streamMapping: StreamMapping): {
       groupHeader: null,
       streams: sortByKey(Object.values(noParents), (stream: StreamType) => getStreamID(stream)),
     },
-    ...sortByKey(Object.entries(parents), ([parentStreamID,]) => parentStreamID).map(([
+    ...sortByKey(Object.entries(parents), ([parentStreamID]) => parentStreamID).map(([
       groupHeader,
       mapping,
     ]) => ({
@@ -860,7 +871,7 @@ export function updateStreamMappingWithPropertyAttributeValues(
               },
             };
 
-            metadataByColumn[column] = md
+            metadataByColumn[column] = md;
           } else if (attributesOnStream.includes(attribute as AttributeUUIDEnum)) {
             if (!streamUpdated?.[attribute]) {
               streamUpdated[attribute] = [];
@@ -979,7 +990,7 @@ export function buildInputsFromUpstreamBlocks(
     return acc.concat({
       block: b,
       input,
-    })
+    });
   }, []);
 }
 
@@ -1028,4 +1039,34 @@ export function getSelectedColumnsAndAllColumn(stream: StreamType): {
     allColumns,
     selectedColumns,
   };
+}
+
+export function isDynamic(block: BlockType): boolean {
+  const {
+    configuration,
+    tags,
+  } = block || {};
+
+  return configuration?.dynamic || tags?.includes(TagEnum.DYNAMIC);
+}
+
+export function isDynamicChild(block: BlockType): boolean {
+  const {
+    tags,
+  } = block || {};
+
+  return tags?.includes(TagEnum.DYNAMIC_CHILD);
+}
+
+export function isDynamicOrDynamicChild(block: BlockType): boolean {
+  return isDynamic(block) || isDynamicChild(block);
+}
+
+export function reduceOutput(block: BlockType): boolean {
+  const {
+    configuration,
+    tags,
+  } = block || {};
+
+  return configuration?.reduce_output || tags?.includes(TagEnum.REDUCE_OUTPUT);
 }

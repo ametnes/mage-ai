@@ -13,6 +13,14 @@ import {
 } from './fetcher';
 import { buildUrl } from './url';
 
+function validateID(value: number | string | boolean): number | string | boolean {
+  if (typeof value !== 'undefined' && value !== null && value !== false) {
+    return value;
+  }
+
+  return null;
+}
+
 export function fetchCreate(resource: string, body: object, opts: any = {}) {
   return buildFetchV2(buildUrl(resource), { ...opts, body, method: POST });
 }
@@ -94,7 +102,7 @@ export function useDetail(
     pauseFetch,
   } = customOptions || {};
 
-  const url = id ? buildUrl(resource, id) : null;
+  const url = validateID(id) ? buildUrl(resource, id) : null;
   const key = url && keyInit ? keyInit : url;
 
   const {
@@ -135,7 +143,7 @@ export function useDetailWithParent(
     key: keyInit,
   } = customOptions || {};
 
-  const url = id && (parentId ? buildUrl(
+  const url = validateID(id) && (validateID(parentId) ? buildUrl(
     parentResource,
     parentId,
     resource,
@@ -160,6 +168,75 @@ export function useDetailWithParent(
     error,
     mutate,
   };
+}
+
+export function useListAsync(
+  resource: string,
+  query: any = {},
+  options: FetcherOptionsType = {},
+) {
+  return buildFetchV2(
+    buildUrl(
+      resource,
+      null,
+      null,
+      null,
+      query,
+      null,
+    ),
+    {
+      ...options,
+      method: GET,
+      query,
+    },
+  );
+}
+
+export function useListWithParentAsync(
+  resource: string,
+  parentResource: string,
+  parentId: string,
+  query: any = {},
+  options: FetcherOptionsType = {},
+) {
+  return buildFetchV2(
+    buildUrl(
+      parentResource,
+      parentId,
+      resource,
+      null,
+      query,
+      null,
+    ),
+    {
+      ...options,
+      method: GET,
+      query,
+    },
+  );
+}
+
+export function useDetailAsync(
+  resource: string,
+  id: string,
+  query: any = {},
+  options: FetcherOptionsType = {},
+) {
+  return buildFetchV2(
+    buildUrl(
+      resource,
+      id,
+      null,
+      null,
+      query,
+      null,
+    ),
+    {
+      ...options,
+      method: GET,
+      query,
+    },
+  );
 }
 
 export function useDetailWithParentAsync(

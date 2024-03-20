@@ -29,6 +29,13 @@ class ScheduleType(str, enum.Enum):
     TIME = 'time'
 
 
+SCHEDULE_TYPE_TO_LABEL = {
+  ScheduleType.API: 'API',
+  ScheduleType.EVENT: 'Event',
+  ScheduleType.TIME: 'Schedule',
+}
+
+
 class ScheduleInterval(str, enum.Enum):
     ONCE = '@once'
     HOURLY = '@hourly'
@@ -42,8 +49,11 @@ class ScheduleInterval(str, enum.Enum):
 class SettingsConfig(BaseConfig):
     skip_if_previous_running: bool = False
     allow_blocks_to_fail: bool = False
+    create_initial_pipeline_run: bool = False
     landing_time_enabled: bool = False
+    pipeline_run_limit: int = None
     timeout: int = None  # in seconds
+    timeout_status: str = None
 
 
 @dataclass
@@ -54,10 +64,12 @@ class Trigger(BaseConfig):
     start_time: datetime
     schedule_interval: str
     status: ScheduleStatus = ScheduleStatus.INACTIVE
+    last_enabled_at: datetime = None
     variables: Dict = field(default_factory=dict)
     sla: int = None     # in seconds
     settings: Dict = field(default_factory=dict)
     envs: List = field(default_factory=list)
+    repo_path: str = None
 
     def __post_init__(self):
         if self.schedule_type and type(self.schedule_type) is str:
@@ -81,6 +93,7 @@ class Trigger(BaseConfig):
     def to_dict(self) -> Dict:
         return dict(
             envs=self.envs,
+            last_enabled_at=self.last_enabled_at,
             name=self.name,
             pipeline_uuid=self.pipeline_uuid,
             schedule_interval=self.schedule_interval,
@@ -151,6 +164,7 @@ def build_triggers(
     trigger_configs: Dict,
     pipeline_uuid: str = None,
     raise_exception: bool = False,
+    repo_path: str = None,
 ) -> List[Trigger]:
     triggers = []
     for trigger_config in trigger_configs:
@@ -158,6 +172,8 @@ def build_triggers(
             trigger_config['pipeline_uuid'] = pipeline_uuid
         try:
             trigger = Trigger.load(config=trigger_config)
+            if trigger.repo_path is None:
+                trigger.repo_path = repo_path
 
             # Add flag to settings so frontend can detect triggers with invalid cron expressions
             if not trigger.has_valid_schedule_interval:
@@ -182,7 +198,8 @@ def load_trigger_configs(
     yaml_config = yaml.safe_load(content) or {}
     trigger_configs = yaml_config.get('triggers') or {}
 
-    return build_triggers(trigger_configs, pipeline_uuid, raise_exception)
+    return build_triggers(
+        trigger_configs, pipeline_uuid, raise_exception, repo_path=get_repo_path())
 
 
 def add_or_update_trigger_for_pipeline_and_persist(

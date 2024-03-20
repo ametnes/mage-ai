@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import os
 import shutil
 import subprocess
@@ -9,21 +8,32 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List
 from urllib.parse import urlparse, urlsplit, urlunsplit
 
+from mage_ai.authentication.oauth.constants import ProviderName
+from mage_ai.data_preparation.git.constants import DEFAULT_KNOWN_HOSTS_FILE
+from mage_ai.data_preparation.git.utils import (
+    add_host_to_known_hosts as add_host_to_known_hosts_util,
+)
+from mage_ai.data_preparation.git.utils import (
+    build_authenticated_remote_url,
+    check_connection,
+    check_connection_async,
+    create_ssh_keys,
+    get_access_token,
+    get_provider_from_remote_url,
+    poll_process_with_timeout,
+    run_command,
+)
 from mage_ai.data_preparation.preferences import get_preferences
-from mage_ai.data_preparation.shared.secrets import get_secret_value
 from mage_ai.data_preparation.sync import AuthType, GitConfig
 from mage_ai.orchestration.db.models.oauth import User
+from mage_ai.server.logger import Logger
+from mage_ai.settings.platform import git_settings, project_platform_activated
 from mage_ai.settings.repo import get_repo_path
 from mage_ai.shared.logger import VerboseFunctionExec
 
-DEFAULT_SSH_KEY_DIRECTORY = os.path.expanduser(os.path.join('~', '.ssh'))
-DEFAULT_KNOWN_HOSTS_FILE = os.path.join(DEFAULT_SSH_KEY_DIRECTORY, 'known_hosts')
 REMOTE_NAME = 'mage-repo'
 
-# Git authentication variables
-GIT_SSH_PUBLIC_KEY_VAR = 'GIT_SSH_PUBLIC_KEY'
-GIT_SSH_PRIVATE_KEY_VAR = 'GIT_SSH_PRIVATE_KEY'
-GIT_ACCESS_TOKEN_VAR = 'GIT_ACCESS_TOKEN'
+logger = Logger().new_server_logger(__name__)
 
 
 class Git:
@@ -31,7 +41,7 @@ class Git:
         self,
         auth_type: AuthType = None,
         git_config: GitConfig = None,
-        setup_repo: bool = True,
+        setup_repo: bool = False,
     ) -> None:
         import git
         import git.exc
@@ -41,7 +51,13 @@ class Git:
         self.origin = None
         self.remote_repo_link = None
         self.repo = None
+
         self.repo_path = os.getcwd()
+
+        if project_platform_activated():
+            git_dict = git_settings()
+            if git_dict and git_dict.get('path'):
+                self.repo_path = git_dict.get('path')
 
         if self.git_config:
             self.remote_repo_link = self.git_config.remote_repo_link
@@ -54,17 +70,8 @@ class Git:
 
         os.makedirs(self.repo_path, exist_ok=True)
 
-        if self.auth_type == AuthType.HTTPS:
-            url = None
-            if self.remote_repo_link:
-                url = urlsplit(self.remote_repo_link)
-
-            token = self.__get_access_token()
-
-            if self.git_config and url:
-                user = self.git_config.username
-                url = url._replace(netloc=f'{user}:{token}@{url.netloc}')
-                self.remote_repo_link = urlunsplit(url)
+        if self.auth_type == AuthType.SSH and setup_repo:
+            self.__create_ssh_keys(overwrite=True)
 
         try:
             self.repo = git.Repo(self.repo_path)
@@ -75,7 +82,7 @@ class Git:
         if self.repo and self.git_config:
             self.__set_git_config()
 
-        if self.remote_repo_link:
+        if self.remote_repo_link and self.repo:
             try:
                 self.repo.create_remote(REMOTE_NAME, self.remote_repo_link)
             except git.exc.GitCommandError:
@@ -87,17 +94,74 @@ class Git:
             if self.remote_repo_link not in self.origin.urls:
                 self.origin.set_url(self.remote_repo_link)
 
+    def __setup_repo(self):
+        import git
+        import git.cmd
+        tmp_path = f'{self.repo_path}_{str(uuid.uuid4())}'
+        os.mkdir(tmp_path)
+        repo_git = git.cmd.Git(self.repo_path)
+        try:
+            # Clone the remote repo and copy over the .git folder
+            # to initialize the local repository.
+            env = {}
+            remote_repo_link = self.remote_repo_link
+            if self.auth_type == AuthType.SSH:
+                private_key_file = self.__create_ssh_keys()
+                env = {'GIT_SSH_COMMAND': f'ssh -i {private_key_file}'}
+                if not self.__add_host_to_known_hosts():
+                    raise Exception('Could not add host to known_hosts')
+            if self.auth_type == AuthType.HTTPS:
+                token = self.get_access_token()
+                if self.git_config and self.remote_repo_link and token:
+                    remote_repo_link = build_authenticated_remote_url(
+                        self.remote_repo_link,
+                        self.git_config.username,
+                        token,
+                    )
+            repo_git.update_environment(**env)
+            proc = repo_git.clone(
+                remote_repo_link,
+                tmp_path,
+                origin=REMOTE_NAME,
+                as_process=True,
+            )
+
+            asyncio.run(
+                poll_process_with_timeout(
+                    proc,
+                    error_message='Error cloning repo.',
+                    timeout=20,
+                )
+            )
+
+            git_folder = os.path.join(self.repo_path, '.git')
+            tmp_git_folder = os.path.join(tmp_path, '.git')
+            shutil.move(tmp_git_folder, git_folder)
+            self.repo = git.Repo(path=self.repo_path)
+        except Exception:
+            self.repo = git.Repo.init(self.repo_path)
+            # need to commit something to initialize the repository
+            self.commit('Initial commit')
+        finally:
+            shutil.rmtree(tmp_path)
+
     @classmethod
     def get_manager(
         self,
         user: User = None,
-        setup_repo: bool = True,
+        setup_repo: bool = False,
         auth_type: str = None,
+        config_overwrite: Dict = None,
     ) -> 'Git':
         preferences = get_preferences(user=user)
         git_config = None
-        if preferences and preferences.sync_config:
-            git_config = GitConfig.load(config=preferences.sync_config)
+        config = preferences.sync_config if preferences and preferences.sync_config else {}
+
+        if config_overwrite:
+            config.update(**config_overwrite)
+
+        git_config = GitConfig.load(config=config)
+
         return Git(
             auth_type=auth_type,
             git_config=git_config,
@@ -118,6 +182,63 @@ class Git:
 
         return [branch.name for branch in self.repo.branches]
 
+    async def check_connection(self) -> None:
+        await check_connection_async(self.repo.git, self.origin.name)
+
+    def _remote_command(func: Callable) -> None:
+        """
+        Decorator method for commands that need to connect to the remote repo. This decorator
+        will configure and test SSH settings before executing the Git command.
+        """
+        def wrapper(self, *args, **kwargs):
+            def add_host_to_known_hosts():
+                self.__add_host_to_known_hosts()
+                asyncio.run(self.check_connection())
+
+            if self.auth_type == AuthType.SSH:
+                url = f'ssh://{self.git_config.remote_repo_link}'
+                hostname = urlparse(url).hostname
+
+                private_key_file = self.__create_ssh_keys()
+                git_ssh_cmd = f'ssh -i {private_key_file}'
+                with self.repo.git.custom_environment(GIT_SSH_COMMAND=git_ssh_cmd):
+                    if not os.path.exists(DEFAULT_KNOWN_HOSTS_FILE):
+                        self.__add_host_to_known_hosts()
+                    try:
+                        asyncio.run(self.check_connection())
+                    except ChildProcessError as err:
+                        if 'Host key verification failed' in str(err):
+                            if hostname:
+                                add_host_to_known_hosts()
+                        else:
+                            raise
+                    except TimeoutError:
+                        if hostname:
+                            add_host_to_known_hosts()
+                        else:
+                            raise TimeoutError(
+                                "Connecting to remote timed out, make sure your SSH key is set up properly"  # noqa: E501
+                                " and your repository host is added as a known host. More information here:"  # noqa: E501
+                                " https://docs.mage.ai/developing-in-the-cloud/setting-up-git#5-add-github-com-to-known-hosts")  # noqa: E501
+                    return func(self, *args, **kwargs)
+            elif self.auth_type == AuthType.HTTPS:
+                token = self.get_access_token()
+                url_original = list(self.origin.urls)[0]
+                if self.git_config and self.remote_repo_link and token:
+                    self.remote_repo_link = build_authenticated_remote_url(
+                        self.remote_repo_link,
+                        self.git_config.username,
+                        token,
+                    )
+                    self.origin.set_url(self.remote_repo_link)
+                try:
+                    asyncio.run(self.check_connection())
+                    return func(self, *args, **kwargs)
+                finally:
+                    self.origin.set_url(url_original)
+                    self.remote_repo_link = url_original
+        return wrapper
+
     def add_remote(self, name: str, url: str) -> None:
         self.repo.create_remote(name, url)
 
@@ -132,7 +253,7 @@ class Git:
                 as_process=True,
             )
             try:
-                stdout = await self.__poll_process_with_timeout(
+                stdout = await poll_process_with_timeout(
                     proc,
                     error_message='Error fetching untracked files',
                     timeout=10,
@@ -156,7 +277,7 @@ class Git:
             untracked_files=untracked_files,
         )
         try:
-            stdout = await self.__poll_process_with_timeout(
+            stdout = await poll_process_with_timeout(
                 proc,
                 error_message='Error fetching untracked files',
                 timeout=10,
@@ -196,61 +317,6 @@ class Git:
 
         return [item.a_path for item in self.repo.index.diff(None)]
 
-    async def check_connection(self) -> None:
-        proc = self.repo.git.ls_remote(self.origin.name, as_process=True)
-
-        await self.__poll_process_with_timeout(
-            proc,
-            error_message='Error connecting to remote, make sure your access token or SSH key is ' +
-            'set up properly.',
-        )
-
-    def _run_command(self, command: str) -> None:
-        proc = subprocess.Popen(args=command, shell=True)
-        proc.wait()
-
-    def _remote_command(func: Callable) -> None:
-        '''
-        Decorator method for commands that need to connect to the remote repo. This decorator
-        will configure and test SSH settings before executing the Git command.
-        '''
-        def wrapper(self, *args, **kwargs):
-            def add_host_to_known_hosts():
-                self.__add_host_to_known_hosts()
-                asyncio.run(self.check_connection())
-
-            if self.auth_type == AuthType.SSH:
-                url = f'ssh://{self.git_config.remote_repo_link}'
-                hostname = urlparse(url).hostname
-
-                private_key_file = self.__create_ssh_keys()
-                git_ssh_cmd = f'ssh -i {private_key_file}'
-                with self.repo.git.custom_environment(GIT_SSH_COMMAND=git_ssh_cmd):
-                    if not os.path.exists(DEFAULT_KNOWN_HOSTS_FILE):
-                        self.__add_host_to_known_hosts()
-                    try:
-                        asyncio.run(self.check_connection())
-                    except ChildProcessError as err:
-                        if 'Host key verification failed' in str(err):
-                            if hostname:
-                                add_host_to_known_hosts()
-                        else:
-                            raise err
-                    except TimeoutError:
-                        if hostname:
-                            add_host_to_known_hosts()
-                        else:
-                            raise TimeoutError(
-                                "Connecting to remote timed out, make sure your SSH key is set up properly"  # noqa: E501
-                                " and your repository host is added as a known host. More information here:"  # noqa: E501
-                                " https://docs.mage.ai/developing-in-the-cloud/setting-up-git#5-add-github-com-to-known-hosts")  # noqa: E501
-                    return func(self, *args, **kwargs)
-            else:
-                asyncio.run(self.check_connection())
-                return func(self, *args, **kwargs)
-
-        return wrapper
-
     @_remote_command
     def submodules_update(self, repo_path: str = None) -> None:
         self.__submodules_update(repo_path=repo_path)
@@ -272,20 +338,23 @@ class Git:
             repo = self.repo
             repo_path = self.repo_path
 
-        parser = GitConfigParser(
-            os.path.join(repo_path, '.gitmodules'),
-            read_only=True,
-        )
+        gitmodules_path = os.path.join(repo_path, '.gitmodules')
+
+        def update_gitmodules(section: str, option: str, value: Any):
+            gitmodules_parser = GitConfigParser(gitmodules_path, read_only=False)
+            gitmodules_parser.set(section, option, value)
+            gitmodules_parser.release()
+
+        parser = GitConfigParser(gitmodules_path)
         sections = parser.sections()
         for section in sections:
             path = parser.get(section, 'path', fallback=None)
             submodule_url = parser.get(section, 'url', fallback=None)
-            parser.release()
             if path and submodule_url:
                 submodule_full_path = os.path.join(repo_path, path)
                 tmp_full_path = f'{submodule_full_path}-{str(uuid.uuid4())}'
                 try:
-                    print(f'Updating {section}...')
+                    logger.info(f'Updating {section}...')
                     # Create a temporary directory to store the current contents of the submodule
                     # directory because the `git submodule update` command will fail if the
                     # submodule directory already exists and is not empty.
@@ -299,14 +368,20 @@ class Git:
                     url = urlsplit(submodule_url)
                     if self.auth_type == AuthType.HTTPS:
                         user = self.git_config.username
-                        token = self.__get_access_token()
+                        token = self.get_access_token()
                         url = url._replace(netloc=f'{user}:{token}@{url.netloc}')
                         url = urlunsplit(url)
                         # Overwrite the submodule URL with git credentials.
-                        repo.config_writer().set_value(
-                            f'submodule.{path}', 'url', url).release()
+                        update_gitmodules(section, 'url', url)
 
-                    subprocess.run(
+                    env = {}
+                    if self.auth_type == AuthType.SSH:
+                        private_key_file = self.__create_ssh_keys()
+                        env = {'GIT_SSH_COMMAND': f'ssh -i {private_key_file}'}
+
+                    repo.git.submodule('sync', '--', path)
+
+                    proc = subprocess.Popen(
                         [
                             'git',
                             'submodule',
@@ -314,9 +389,16 @@ class Git:
                             '--init',
                             path,
                         ],
-                        check=True,
                         cwd=repo_path,
-                        timeout=20,
+                        env=env,
+                    )
+
+                    asyncio.run(
+                        poll_process_with_timeout(
+                            proc,
+                            error_message=f'Error updating submodule {section}.',
+                            timeout=20,
+                        )
                     )
                 except Exception:
                     if os.path.exists(tmp_full_path):
@@ -324,14 +406,19 @@ class Git:
                             tmp_full_path,
                             submodule_full_path,
                         )
+                    logger.exception(f'Failed to update {section}.')
                 else:
-                    print(f'{section} updated!')
+                    logger.info(f'{section} updated!')
                 finally:
+                    # Restore the submodule URL.
+                    update_gitmodules(section, 'url', submodule_url)
                     if os.path.exists(tmp_full_path):
                         shutil.rmtree(tmp_full_path)
                     repo_config_writer = repo.config_writer()
-                    repo_config_writer.remove_section(f'submodule.{path}')
+                    repo_config_writer.remove_section(section)
                     repo_config_writer.release()
+
+        parser.release()
 
     @_remote_command
     def reset_hard(self, branch: str = None, remote_name: str = None) -> None:
@@ -443,6 +530,13 @@ class Git:
         if message:
             self.repo.index.commit(message)
 
+    def update_config(self, settings: Dict) -> None:
+        for key, value in settings.items():
+            self.repo.config_writer().set_value(
+                *key.split('.'),
+                value,
+            ).release()
+
     def remotes(self, limit: int = 40, user: User = None) -> List[Dict]:
         arr = []
 
@@ -476,7 +570,7 @@ class Git:
                         if remote_exists:
                             token = access_token.token
                             username = api.get_username(token)
-                            url = api.build_authenticated_remote_url(
+                            url = build_authenticated_remote_url(
                                 remote_url,
                                 username,
                                 token,
@@ -486,7 +580,7 @@ class Git:
 
                             authenticated = False
                             try:
-                                api.check_connection(self.repo, url)
+                                check_connection(self.repo.git, url)
                                 authenticated = True
                             except Exception as err:
                                 print('WARNING (mage_ai.data_preparation.git.remotes):')
@@ -530,7 +624,14 @@ class Git:
             try:
                 for url in remote.urls:
                     if url.lower().startswith('https'):
-                        repository_names.append('/'.join(url.split('/')[-2:]).replace('.git', ''))
+                        provider = get_provider_from_remote_url(url)
+                        if provider == ProviderName.AZURE_DEVOPS:
+                            updated_url = url.replace('/_git', '')
+                            repository_names.append('/'.join(updated_url.split('/')[-2:]))
+                        else:
+                            repository_names.append(
+                                '/'.join(url.split('/')[-2:]).replace('.git', '')
+                            )
 
                         # Remove the token from the URL
                         # e.g. https://[user]:[token]@[netloc]
@@ -578,9 +679,18 @@ class Git:
     def commit_message(self, message: str) -> None:
         self.repo.index.commit(message)
 
-    def switch_branch(self, branch) -> None:
+    def switch_branch(self, branch, remote: str = None) -> None:
         if branch in self.repo.heads:
             self.repo.git.switch(branch)
+        elif remote:
+            # For remote branches, switch to the local branch if it exists. Otherwise create a new
+            # branch using the remote branch as the starting point.
+            if branch.startswith(remote):
+                branch = branch[len(remote) + 1:]
+            if branch in self.repo.heads:
+                self.repo.git.switch(branch)
+            else:
+                self.repo.git.switch('-c', branch, f'{remote}/{branch}')
         else:
             self.repo.git.switch('-c', branch)
 
@@ -639,155 +749,17 @@ class Git:
             try:
                 if os.path.exists(requirements_file):
                     cmd = f'pip3 install -r {requirements_file}'
-                    self._run_command(cmd)
-                print(f'Installing {requirements_file} completed successfully.')
+                    run_command(cmd)
+                logger.info(f'Installing {requirements_file} completed successfully.')
             except Exception as err:
-                print(f'Skip installing {requirements_file} due to error: {str(err)}')
+                logger.warning(f'Skip installing {requirements_file} due to error: {str(err)}')
                 pass
 
-    def __create_ssh_keys(self) -> str:
-        if not os.path.exists(DEFAULT_SSH_KEY_DIRECTORY):
-            os.mkdir(DEFAULT_SSH_KEY_DIRECTORY, 0o700)
-        pubk_secret_name = self.git_config.ssh_public_key_secret_name
-        if pubk_secret_name:
-            public_key_file = os.path.join(
-                DEFAULT_SSH_KEY_DIRECTORY,
-                f'id_rsa_{pubk_secret_name}.pub'
-            )
-            if not os.path.exists(public_key_file):
-                try:
-                    public_key = get_secret_value(
-                        pubk_secret_name,
-                        repo_name=get_repo_path(),
-                    )
-                    if os.getenv(GIT_SSH_PUBLIC_KEY_VAR):
-                        public_key = os.getenv(GIT_SSH_PUBLIC_KEY_VAR)
-                    if public_key:
-                        with open(public_key_file, 'w') as f:
-                            f.write(base64.b64decode(public_key).decode('utf-8'))
-                        os.chmod(public_key_file, 0o600)
-                except Exception:
-                    pass
-        pk_secret_name = self.git_config.ssh_private_key_secret_name
-        private_key_file = os.path.join(DEFAULT_SSH_KEY_DIRECTORY, 'id_rsa')
-        if pk_secret_name:
-            custom_private_key_file = os.path.join(
-                DEFAULT_SSH_KEY_DIRECTORY,
-                f'id_rsa_{pk_secret_name}'
-            )
-            if not os.path.exists(custom_private_key_file):
-                try:
-                    private_key = get_secret_value(
-                        pk_secret_name,
-                        repo_name=get_repo_path(),
-                    )
-                    if os.getenv(GIT_SSH_PRIVATE_KEY_VAR):
-                        private_key = os.getenv(GIT_SSH_PRIVATE_KEY_VAR)
-                    if private_key:
-                        with open(custom_private_key_file, 'w') as f:
-                            f.write(base64.b64decode(private_key).decode('utf-8'))
-                        os.chmod(custom_private_key_file, 0o600)
-                        private_key_file = custom_private_key_file
-                except Exception:
-                    pass
-            else:
-                private_key_file = custom_private_key_file
-
-        return private_key_file
-
-    def __setup_repo(self):
-        import git
-        import git.cmd
-        tmp_path = f'{self.repo_path}_{str(uuid.uuid4())}'
-        os.mkdir(tmp_path)
-        repo_git = git.cmd.Git(self.repo_path)
-        try:
-            # Clone the remote repo and copy over the .git folder
-            # to initialize the local repository.
-            env = {}
-            if self.auth_type == AuthType.SSH:
-                private_key_file = self.__create_ssh_keys()
-                env = {'GIT_SSH_COMMAND': f'ssh -i {private_key_file}'}
-                if not self.__add_host_to_known_hosts():
-                    raise Exception('Could not add host to known_hosts')
-            repo_git.update_environment(**env)
-            proc = repo_git.clone(
-                self.remote_repo_link,
-                tmp_path,
-                origin=REMOTE_NAME,
-                as_process=True,
-            )
-
-            asyncio.run(
-                self.__poll_process_with_timeout(
-                    proc,
-                    error_message='Error cloning repo.',
-                    timeout=20,
-                )
-            )
-
-            git_folder = os.path.join(self.repo_path, '.git')
-            tmp_git_folder = os.path.join(tmp_path, '.git')
-            shutil.move(tmp_git_folder, git_folder)
-            self.repo = git.Repo(path=self.repo_path)
-        except Exception:
-            self.repo = git.Repo.init(self.repo_path)
-            # need to commit something to initialize the repository
-            self.commit('Initial commit')
-        finally:
-            shutil.rmtree(tmp_path)
+    def __create_ssh_keys(self, overwrite: bool = False) -> str:
+        return create_ssh_keys(self.git_config, get_repo_path(), overwrite=overwrite)
 
     def __add_host_to_known_hosts(self):
-        url = f'ssh://{self.git_config.remote_repo_link}'
-        hostname = urlparse(url).hostname
-        if hostname:
-            cmd = f'ssh-keyscan -t rsa {hostname} >> {DEFAULT_KNOWN_HOSTS_FILE}'
-            self._run_command(cmd)
-            return True
-        return False
+        return add_host_to_known_hosts_util(self.git_config.remote_repo_link)
 
-    async def __poll_process_with_timeout(
-        self,
-        proc: subprocess.Popen,
-        error_message: str = None,
-        timeout: int = 10,
-    ) -> str:
-        ct = 0
-        return_code = None
-        while ct < timeout * 2:
-            return_code = proc.poll()
-            if return_code is not None:
-                proc.kill()
-                break
-            ct += 1
-            await asyncio.sleep(0.5)
-
-        if error_message is None:
-            error_message = 'Error running Git process'
-
-        if return_code is not None:
-            out, err = proc.communicate()
-            if return_code != 0:
-                message = (
-                    err.decode('UTF-8') if err
-                    else error_message
-                )
-                raise ChildProcessError(message)
-            else:
-                return out.decode('UTF-8') if out else None
-
-        if return_code is None:
-            proc.kill()
-            raise TimeoutError
-
-    def __get_access_token(self) -> str:
-        token = None
-        if os.getenv(GIT_ACCESS_TOKEN_VAR):
-            token = os.getenv(GIT_ACCESS_TOKEN_VAR)
-        elif self.git_config and self.git_config.access_token_secret_name:
-            token = get_secret_value(
-                self.git_config.access_token_secret_name,
-                repo_name=get_repo_path(),
-            )
-
-        return token
+    def get_access_token(self) -> str:
+        return get_access_token(self.git_config)

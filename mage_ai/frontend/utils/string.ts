@@ -5,7 +5,7 @@ import letters from './samples/letters';
 import moment from 'moment';
 import nouns from './samples/nouns';
 import numbers from './samples/numbers';
-import { randomSample } from './array';
+import { randomSample, range } from './array';
 
 export function isJsonString(str) {
   if (!str) {
@@ -140,14 +140,20 @@ export function removeUnderscore(string) {
 
 export function singularize(string) {
   const { length } = string;
+
   if (string.slice(length - 3, length) === 'ies') {
     return `${string.slice(0, length - 3)}y`;
   }
+
   if (string.slice(length - 2, length) === 'es' && string.slice(length - 3, length) !== 'ces') {
     return string.slice(0, length - 2);
   }
 
-  return string.slice(0, length - 1);
+  if (string[length - 1] === 's') {
+    return string.slice(0, length - 1);
+  }
+
+  return string;
 }
 
 export function titleize(word) {
@@ -162,6 +168,10 @@ export function titleize(word) {
 
 export function capitalizeRemoveUnderscoreLower(word = '') {
   return capitalize(removeUnderscore(word.toLowerCase()));
+}
+
+export function lowercaseRemoveUnderscore(word = '') {
+  return removeUnderscore(word.toLowerCase());
 }
 
 export function abbreviateNumber(value) {
@@ -330,5 +340,85 @@ export function formatNumberToDuration(duration: number): string {
     }
   }
 
-  return displayText
+  return displayText;
+}
+
+export function alphabet(): string[] {
+  const alpha = Array.from(Array(26)).map((e, i) => i + 65);
+  return alpha.map((x) => String.fromCharCode(x));
+}
+
+export function removASCII(text: string): string {
+  return text?.replace(/[^\x00-\x7F]/g, "");
+}
+
+export function hasANSI(text: string): boolean {
+  return removeANSI(text) !== text;
+}
+
+export function removeANSI(text: string): string {
+  return text?.replace(
+    /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g,
+    '',
+  );
+}
+
+export function stringSimilarity(str1: string, str2: string, gramSize: number = 2) {
+  function getNGrams(s: string, len: number) {
+    s = ' '.repeat(len - 1) + s.toLowerCase() + ' '.repeat(len - 1);
+    const v = new Array(s.length - len + 1);
+    for (let i = 0; i < v.length; i++) {
+      v[i] = s.slice(i, i + len);
+    }
+    return v;
+  }
+
+  if (!str1?.length || !str2?.length) { return 0.0; }
+
+  const s1 = str1.length < str2.length ? str1 : str2;
+  const s2 = str1.length < str2.length ? str2 : str1;
+
+  const pairs1 = getNGrams(s1, gramSize);
+  const pairs2 = getNGrams(s2, gramSize);
+  const set = new Set<string>(pairs1);
+
+  const total = pairs2.length;
+  let hits = 0;
+  for (const item of pairs2) {
+    if (set.delete(item)) {
+      hits++;
+    }
+  }
+  return hits / total;
+}
+
+export function longestCommonStartingSubstring(arr1: string[]): string {
+  const arr = arr1.concat().sort();
+  const a1 = arr[0];
+  const a2 = arr[arr.length-1];
+  const L = a1.length;
+
+  let i = 0;
+
+  while(i < L && a1.charAt(i) === a2.charAt(i)) i++;
+
+  return a1.substring(0, i);
+}
+
+export function componentToHex(c) {
+  const hex = c.toString(16);
+  return hex.length == 1 ? '0' + hex : hex;
+}
+
+export function rgbToHex(r, g, b) {
+  return '#' + componentToHex(r) + componentToHex(g) + componentToHex(b);
+}
+
+export function hexToRgb(hex) {
+  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  return result ? {
+    r: parseInt(result[1], 16),
+    g: parseInt(result[2], 16),
+    b: parseInt(result[3], 16),
+  } : null;
 }

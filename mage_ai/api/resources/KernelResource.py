@@ -7,6 +7,7 @@ from mage_ai.server.active_kernel import (
     switch_active_kernel,
 )
 from mage_ai.server.kernels import DEFAULT_KERNEL_NAME, KernelName, kernel_managers
+from mage_ai.services.ssh.aws.emr.utils import tunnel
 
 
 class KernelResource(GenericResource):
@@ -29,6 +30,7 @@ class KernelResource(GenericResource):
     @classmethod
     @safe_db_query
     def member(self, pk, user, **kwargs):
+        kernel_fallback = None
         kernels_by_id = {}
 
         for kernel_name in KernelName:
@@ -36,7 +38,14 @@ class KernelResource(GenericResource):
             if kernel.has_kernel:
                 kernels_by_id[kernel.kernel_id] = kernel
 
-        kernel = kernels_by_id.get(pk) or kernel_managers[DEFAULT_KERNEL_NAME]
+                if not kernel_fallback:
+                    kernel_fallback = kernel
+
+        kernel = kernels_by_id.get(pk)
+        if not kernel:
+            kernel = kernel_fallback
+        if not kernel:
+            kernel = kernel_managers[DEFAULT_KERNEL_NAME]
 
         return self(kernel, user, **kwargs)
 
@@ -55,5 +64,14 @@ class KernelResource(GenericResource):
                 # RuntimeError: Cannot restart the kernel. No previous call to 'start_kernel'.
                 if 'start_kernel' in str(e):
                     start_kernel()
+
+        def _callback(*args, **kwargs):
+            tunnel(
+                kernel_name=self.model.kernel_name,
+                reconnect=True,
+                validate_conditions=True,
+            )
+
+        self.on_update_callback = _callback
 
         return self

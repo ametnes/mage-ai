@@ -28,9 +28,8 @@ import ColumnScroller, { StartDataType } from './ColumnScroller';
 import DataProviderType from '@interfaces/DataProviderType';
 import ErrorsType from '@interfaces/ErrorsType';
 import FileSelectorPopup from '@components/FileSelectorPopup';
-import FileType, { FileExtensionEnum } from '@interfaces/FileType';
+import FileType, { BlockFolderNameEnum, FileExtensionEnum } from '@interfaces/FileType';
 import GlobalDataProductType from '@interfaces/GlobalDataProductType';
-import HiddenBlock from '@components/CodeBlock/HiddenBlock';
 import IntegrationPipeline from '@components/IntegrationPipeline';
 import InteractionType from '@interfaces/InteractionType';
 import KernelOutputType, { ExecutionStateEnum } from '@interfaces/KernelOutputType';
@@ -41,7 +40,10 @@ import ProjectType, { FeatureUUIDEnum } from '@interfaces/ProjectType';
 import Spacing from '@oracle/elements/Spacing';
 import Text from '@oracle/elements/Text';
 import api from '@api';
+import useDelayFetch from '@api/utils/useDelayFetch';
 import usePrevious from '@utils/usePrevious';
+import useProject from '@utils/models/project/useProject';
+import useStatus from '@utils/models/status/useStatus';
 import {
   ANIMATION_DURATION,
   OverlayStyle,
@@ -61,8 +63,10 @@ import {
 } from './constants';
 import {
   KEY_CODES_SYSTEM,
+  KEY_CODE_A,
   KEY_CODE_ARROW_DOWN,
   KEY_CODE_ARROW_UP,
+  KEY_CODE_B,
   KEY_CODE_CONTROL,
   KEY_CODE_D,
   KEY_CODE_ENTER,
@@ -74,17 +78,21 @@ import {
   KEY_CODE_R,
   KEY_CODE_S,
 } from '@utils/hooks/keyboardShortcuts/constants';
+import { OpenBlockBrowserModalType } from '@components/BlockBrowser/constants';
 import { OpenDataIntegrationModalType } from '@components/DataIntegrationModal/constants';
 import { PADDING_UNITS } from '@oracle/styles/units/spacing';
 import { SIDE_BY_SIDE_VERTICAL_PADDING } from '@components/CodeBlock/index.style';
 import { ViewKeyEnum } from '@components/Sidekick/constants';
+import { addClassNames, removeClassNames } from '@utils/elements';
 import { addScratchpadNote, addSqlBlockNote } from '@components/PipelineDetail/AddNewBlocks/utils';
 import { addUnderscores, randomNameGenerator, removeExtensionFromFilename } from '@utils/string';
-import { buildBlockRefKey } from './utils';
+import { buildBlockRefKey, buildBlockFromFilePath } from './utils';
 import { getUpstreamBlockUuids } from '@components/CodeBlock/utils';
+import { isInputElement } from '@context/shared/utils';
 import { onlyKeysPresent } from '@utils/hooks/keyboardShortcuts/utils';
 import { onSuccess } from '@api/utils/response';
-import { pushAtIndex, removeAtIndex } from '@utils/array';
+import { groupBy, pushAtIndex, range, removeAtIndex } from '@utils/array';
+import { removeRootFromFilePath } from '@components/FileBrowser/utils';
 import { selectKeys } from '@utils/hash';
 import { useKeyboardContext } from '@context/Keyboard';
 import { useWindowSize } from '@utils/sizes';
@@ -141,13 +149,14 @@ type PipelineDetailProps = {
   }) => void;
   pipeline: PipelineType;
   pipelineContentTouched: boolean;
-  project?: ProjectType;
   restartKernel: () => void;
   runBlock: (payload: {
     block: BlockType;
     code: string;
     runUpstream?: boolean;
     runTests?: boolean;
+  }, options?: {
+    skipUpdating?: boolean;
   }) => void;
   runningBlocks: BlockType[];
   savePipelineContent: (payload?: {
@@ -159,17 +168,19 @@ type PipelineDetailProps = {
   setAnyInputFocused: (value: boolean) => void;
   setDisableShortcuts: (disableShortcuts: boolean) => void;
   setErrors: (errors: ErrorsType) => void;
-  setIntegrationStreams: (streams: string[]) => void;
   setHiddenBlocks: ((opts: {
     [uuid: string]: BlockType;
   }) => {
     [uuid: string]: BlockType;
   });
+  setIntegrationStreams: (streams: string[]) => void;
   setOutputBlocks: (func: (prevOutputBlocks: BlockType[]) => BlockType[]) => void;
   setPipelineContentTouched: (value: boolean) => void;
   setSelectedBlock: (block: BlockType) => void;
   setSelectedOutputBlock: (block: BlockType) => void;
   setSelectedStream: (stream: string) => void;
+  setScrollTogether?: (prev: any) => void;
+  setSideBySideEnabled?: (prev: any) => void;
   setTextareaFocused: (value: boolean) => void;
   showBrowseTemplates?: (opts?: {
     addNew?: boolean;
@@ -192,7 +203,7 @@ type PipelineDetailProps = {
   sideBySideEnabled?: boolean;
   textareaFocused: boolean;
   widgets: BlockType[];
-} & SetEditingBlockType & OpenDataIntegrationModalType;
+} & SetEditingBlockType & OpenDataIntegrationModalType & OpenBlockBrowserModalType;
 
 function PipelineDetail({
   addNewBlockAtIndex,
@@ -227,7 +238,6 @@ function PipelineDetail({
   openSidekickView,
   pipeline,
   pipelineContentTouched,
-  project,
   restartKernel,
   runBlock,
   runningBlocks = [],
@@ -246,7 +256,10 @@ function PipelineDetail({
   setSelectedOutputBlock,
   setSelectedStream,
   setTextareaFocused,
+  setScrollTogether,
+  setSideBySideEnabled,
   showBrowseTemplates,
+  showBlockBrowserModal,
   showConfigureProjectModal,
   showDataIntegrationModal,
   showGlobalDataProducts,
@@ -255,11 +268,12 @@ function PipelineDetail({
   textareaFocused,
   widgets,
 }: PipelineDetailProps) {
-  // const startTime = performance.now();
-  // useEffect(() => {
-  //   const duration = performance.now() - startTime;
-  //   console.log('PipelineDetail render', duration);
-  // }, []);
+  const {
+    featureEnabled,
+    featureUUIDs,
+    project,
+  } = useProject();
+  const { status } = useStatus();
 
   const containerRef = useRef(null);
   const searchTextInputRef = useRef(null);
@@ -269,6 +283,8 @@ function PipelineDetail({
   const [focusedAddNewBlockSearch, setFocusedAddNewBlockSearch] = useState<boolean>(false);
   const [visible, setVisible] = useState<boolean>(false);
   const [visibleOverlay, setVisibleOverlay] = useState<boolean>(true);
+  const [entered, setEntered] = useState<boolean>(false);
+
   const [addNewBlockMenuOpenIdx, setAddNewBlockMenuOpenIdx] = useState<number>(null);
   const [lastBlockIndex, setLastBlockIndex] = useState<number>(null);
   const [creatingNewDBTModel, setCreatingNewDBTModel] = useState<boolean>(false);
@@ -332,23 +348,21 @@ function PipelineDetail({
   }), {}), [runningBlocks]);
 
   const [cursorHeight1, setCursorHeight1] = useState<number>(null);
-  const column1ScrollMemo = useMemo(() => {
-    return (
-      <ColumnScroller
-        blocks={blocksFiltered}
-        columnIndex={0}
-        columns={2}
-        disabled={scrollTogether}
-        eventNameRefsMapping={{
-          [CUSTOM_EVENT_CODE_BLOCK_CHANGED]: blockRefs,
-        }}
-        invisible={!blocks?.length || !cursorHeight1 || scrollTogether}
-        mainContainerRect={mainContainerRect}
-        scrollTogether={scrollTogether}
-        setCursorHeight={setCursorHeight1}
-      />
-    );
-  }, [
+  const column1ScrollMemo = useMemo(() => (
+    <ColumnScroller
+      blocks={blocksFiltered}
+      columnIndex={0}
+      columns={2}
+      disabled={scrollTogether}
+      eventNameRefsMapping={{
+        [CUSTOM_EVENT_CODE_BLOCK_CHANGED]: blockRefs,
+      }}
+      invisible={!blocks?.length || !cursorHeight1 || scrollTogether}
+      mainContainerRect={mainContainerRect}
+      scrollTogether={scrollTogether}
+      setCursorHeight={setCursorHeight1}
+    />
+  ), [
     blockRefs,
     blocksFiltered,
     cursorHeight1,
@@ -358,9 +372,8 @@ function PipelineDetail({
   ]);
 
   const [cursorHeight2, setCursorHeight2] = useState<number>(null);
-  const column2ScrollMemo = useMemo(() => {
-    return (
-      <ColumnScroller
+  const column2ScrollMemo = useMemo(() => (
+    <ColumnScroller
         blocks={blocksFiltered}
         columnIndex={1}
         columns={2}
@@ -374,8 +387,7 @@ function PipelineDetail({
         scrollTogether={scrollTogether}
         setCursorHeight={setCursorHeight2}
       />
-    );
-  }, [
+    ), [
     blockOutputRefs,
     blocksFiltered,
     cursorHeight2,
@@ -385,13 +397,12 @@ function PipelineDetail({
   ]);
 
   const [cursorHeight3, setCursorHeight3] = useState<number>(null);
-  const column3ScrollMemo = useMemo(() => {
-    return (
-      <ColumnScroller
+  const column3ScrollMemo = useMemo(() => (
+    <ColumnScroller
         blocks={blocksFiltered}
-        disabled={!scrollTogether}
         columnIndex={2}
         columns={1}
+        disabled={!scrollTogether}
         eventNameRefsMapping={{
           [CUSTOM_EVENT_BLOCK_OUTPUT_CHANGED]: blockOutputRefs,
           [CUSTOM_EVENT_CODE_BLOCK_CHANGED]: blockRefs,
@@ -402,8 +413,7 @@ function PipelineDetail({
         scrollTogether={scrollTogether}
         setCursorHeight={setCursorHeight3}
       />
-    );
-  }, [
+    ), [
     blockOutputRefs,
     blockRefs,
     blocksFiltered,
@@ -417,22 +427,84 @@ function PipelineDetail({
   const numberOfBlocks = useMemo(() => blocks.length, [blocks]);
 
   const useV2AddNewBlock = useMemo(
-    () => PipelineTypeEnum.PYTHON === pipeline?.type
-      && project?.features?.[FeatureUUIDEnum.ADD_NEW_BLOCK_V2],
+    () => PipelineTypeEnum.PYTHON === pipeline?.type && featureEnabled?.(
+      featureUUIDs?.ADD_NEW_BLOCK_V2,
+    ),
     [
+      featureEnabled,
+      featureUUIDs,
       pipeline,
-      project,
     ],
   );
-  const { data: dataBlockTemplates } = api.block_templates.list({
-    show_all: useV2AddNewBlock ? true : false,
-  }, {
-    revalidateOnFocus: false,
-  });
+
+  const { data: dataBlockTemplates } = useDelayFetch(
+    api.block_templates.list,
+    {
+      show_all: useV2AddNewBlock ? true : false,
+    }, {
+      revalidateOnFocus: false,
+    }, {
+      delay: 3000,
+    },
+  );
   const blockTemplates: BlockTemplateType[] =
     useMemo(() => dataBlockTemplates?.block_templates || [], [
       dataBlockTemplates,
     ]);
+
+  const addNewBlock = useCallback((newBlock: BlockRequestPayloadType, newBlockIndex?: number) => {
+      const block = blocks[blocks.length - 1];
+
+      let content = null;
+      let configuration = newBlock.configuration || {};
+      const upstreamBlocks = block ? getUpstreamBlockUuids(block, newBlock) : [];
+
+      if (block) {
+        if ([BlockTypeEnum.DATA_LOADER, BlockTypeEnum.TRANSFORMER].includes(block.type)
+          && BlockTypeEnum.SCRATCHPAD === newBlock.type
+        ) {
+          content = `from mage_ai.data_preparation.variable_manager import get_variable
+
+
+df = get_variable('${pipeline.uuid}', '${block.uuid}', 'output_0')
+`;
+        }
+
+        if (BlockLanguageEnum.SQL === block.language) {
+          configuration = {
+            ...selectKeys(block.configuration, [
+              CONFIG_KEY_DATA_PROVIDER,
+              CONFIG_KEY_DATA_PROVIDER_DATABASE,
+              CONFIG_KEY_DATA_PROVIDER_PROFILE,
+              CONFIG_KEY_DATA_PROVIDER_SCHEMA,
+              CONFIG_KEY_EXPORT_WRITE_POLICY,
+            ]),
+            ...configuration,
+          };
+        }
+      }
+
+      if (BlockLanguageEnum.SQL === newBlock.language) {
+        content = addSqlBlockNote(content);
+      }
+      content = addScratchpadNote(newBlock, content);
+
+      const blockIndex = (newBlockIndex !== null) ? newBlockIndex : numberOfBlocks;
+      addNewBlockAtIndex({
+        ...newBlock,
+        configuration,
+        content,
+        upstream_blocks: upstreamBlocks,
+      }, blockIndex, setSelectedBlock);
+      setTextareaFocused(true);
+  }, [
+    addNewBlockAtIndex,
+    blocks,
+    numberOfBlocks,
+    pipeline,
+    setSelectedBlock,
+    setTextareaFocused,
+  ]);
 
   const uuidKeyboard = 'PipelineDetail/index';
   const {
@@ -456,7 +528,25 @@ function PipelineDetail({
         }
       }
 
-      if (disableShortcuts || disableGlobalKeyboardShortcuts) {
+      if (!textareaFocused && !selectedBlock && !isIntegration && useV2AddNewBlock) {
+        if (onlyKeysPresent([KEY_CODE_META, KEY_CODE_FORWARD_SLASH], keyMapping)
+          || onlyKeysPresent([KEY_CODE_CONTROL, KEY_CODE_FORWARD_SLASH], keyMapping)
+        ) {
+          event.preventDefault();
+          setFocusedAddNewBlockSearch(true);
+          searchTextInputRef?.current?.focus();
+          return;
+        } else if (focusedAddNewBlockSearch
+          && onlyKeysPresent([KEY_CODE_ESCAPE], keyMapping)
+        ) {
+          event.preventDefault();
+          setFocusedAddNewBlockSearch(false);
+          searchTextInputRef?.current?.blur();
+          return;
+        }
+      }
+
+      if (!textareaFocused && !selectedBlock && (disableShortcuts || disableGlobalKeyboardShortcuts)) {
         return;
       }
 
@@ -465,6 +555,20 @@ function PipelineDetail({
       ) {
         event.preventDefault();
         savePipelineContent();
+      } else if (onlyKeysPresent([KEY_CODE_A], keyMapping) || onlyKeysPresent([KEY_CODE_B], keyMapping)) {
+        if (selectedBlock && !event.repeat && !isInputElement(event)) {
+          const selectedBlockIndex =
+            blocks.findIndex(({ uuid }: BlockType) => selectedBlock.uuid === uuid);
+            if (selectedBlockIndex !== -1) {
+              // Add new scratchpad block above (A) or below (B) the current selected block
+              const newBlockIndex = (onlyKeysPresent([KEY_CODE_A], keyMapping))
+                ? selectedBlockIndex
+                : selectedBlockIndex + 1;
+              addNewBlock({
+                type: BlockTypeEnum.SCRATCHPAD,
+              }, newBlockIndex);
+            }
+        }
       } else if (textareaFocused) {
         if (keyMapping[KEY_CODE_ESCAPE]) {
           setTextareaFocused(false);
@@ -472,21 +576,7 @@ function PipelineDetail({
           setPipelineContentTouched(true);
         }
       } else if (!isIntegration) {
-        if (useV2AddNewBlock && (
-          onlyKeysPresent([KEY_CODE_META, KEY_CODE_FORWARD_SLASH], keyMapping)
-            || onlyKeysPresent([KEY_CODE_CONTROL, KEY_CODE_FORWARD_SLASH], keyMapping)
-        )) {
-          event.preventDefault();
-          setFocusedAddNewBlockSearch(true);
-          searchTextInputRef?.current?.focus();
-        } else if (useV2AddNewBlock
-          && focusedAddNewBlockSearch
-          && onlyKeysPresent([KEY_CODE_ESCAPE], keyMapping)
-        ) {
-          event.preventDefault();
-          setFocusedAddNewBlockSearch(false);
-          searchTextInputRef?.current?.blur();
-        } else if (selectedBlock) {
+          if (selectedBlock) {
           const selectedBlockIndex =
             blocks.findIndex(({ uuid }: BlockType) => selectedBlock.uuid === uuid);
 
@@ -583,6 +673,23 @@ function PipelineDetail({
     setTimeout(() => setVisible(true), ANIMATION_DURATION * 2);
   }, [pipeline]);
 
+  const [updatePipeline, { isLoading: isLoadingUpdatePipeline }] = useMutation(
+    api.pipelines.useUpdate(encodeURIComponent(pipeline?.uuid)),
+    {
+      onSuccess: (response: any) => onSuccess(
+        response, {
+          callback: () => {
+            fetchPipeline?.();
+          },
+          onErrorCallback: (response, errors) => setErrors?.({
+            errors,
+            response,
+          }),
+        },
+      ),
+    },
+  );
+
   const [updateBlock] = useMutation(
     ({
       block,
@@ -591,8 +698,8 @@ function PipelineDetail({
       block: BlockType,
       upstreamBlocks: string[];
     }) => api.blocks.pipelines.useUpdate(
-      pipeline?.uuid,
-      block?.uuid,
+      encodeURIComponent(pipeline?.uuid),
+      encodeURIComponent(block?.uuid),
     )({
       block: {
         upstream_blocks: upstreamBlocks,
@@ -664,51 +771,8 @@ function PipelineDetail({
   const addNewBlocksMemo = useMemo(() => pipeline && (
     <>
       <AddNewBlocks
-        addNewBlock={(newBlock: BlockRequestPayloadType) => {
-          const block = blocks[blocks.length - 1];
-
-          let content = null;
-          let configuration = newBlock.configuration || {};
-          const upstreamBlocks = block ? getUpstreamBlockUuids(block, newBlock) : [];
-
-          if (block) {
-            if ([BlockTypeEnum.DATA_LOADER, BlockTypeEnum.TRANSFORMER].includes(block.type)
-              && BlockTypeEnum.SCRATCHPAD === newBlock.type
-            ) {
-              content = `from mage_ai.data_preparation.variable_manager import get_variable
-
-
-  df = get_variable('${pipeline.uuid}', '${block.uuid}', 'output_0')
-  `;
-            }
-
-            if (BlockLanguageEnum.SQL === block.language) {
-              configuration = {
-                ...selectKeys(block.configuration, [
-                  CONFIG_KEY_DATA_PROVIDER,
-                  CONFIG_KEY_DATA_PROVIDER_DATABASE,
-                  CONFIG_KEY_DATA_PROVIDER_PROFILE,
-                  CONFIG_KEY_DATA_PROVIDER_SCHEMA,
-                  CONFIG_KEY_EXPORT_WRITE_POLICY,
-                ]),
-                ...configuration,
-              };
-            }
-          }
-
-          if (BlockLanguageEnum.SQL === newBlock.language) {
-            content = addSqlBlockNote(content);
-          }
-          content = addScratchpadNote(newBlock, content);
-
-          addNewBlockAtIndex({
-            ...newBlock,
-            configuration,
-            content,
-            upstream_blocks: upstreamBlocks,
-          }, numberOfBlocks, setSelectedBlock);
-          setTextareaFocused(true);
-        }}
+        addNewBlock={addNewBlock}
+        blockIdx={numberOfBlocks}
         blockTemplates={blockTemplates}
         focusedAddNewBlockSearch={focusedAddNewBlockSearch}
         hideCustom={isIntegration || isStreaming}
@@ -723,6 +787,7 @@ function PipelineDetail({
         searchTextInputRef={searchTextInputRef}
         setCreatingNewDBTModel={setCreatingNewDBTModel}
         setFocusedAddNewBlockSearch={setFocusedAddNewBlockSearch}
+        showBlockBrowserModal={showBlockBrowserModal}
         showBrowseTemplates={showBrowseTemplates}
         showConfigureProjectModal={showConfigureProjectModal}
         showGlobalDataProducts={showGlobalDataProducts}
@@ -750,9 +815,8 @@ function PipelineDetail({
       )}
     </>
   ), [
-    addNewBlockAtIndex,
+    addNewBlock,
     blockTemplates,
-    blocks,
     focusedAddNewBlockSearch,
     isIntegration,
     isStreaming,
@@ -762,18 +826,78 @@ function PipelineDetail({
     project,
     searchTextInputRef,
     setFocusedAddNewBlockSearch,
-    setSelectedBlock,
-    setTextareaFocused,
+    showBlockBrowserModal,
     showBrowseTemplates,
     showConfigureProjectModal,
     showGlobalDataProducts,
-    sideBySideEnabled,
     useV2AddNewBlock,
   ]);
 
-  const codeBlocks = useMemo(() => {
-    const arr = [];
+  useEffect(() => {
+    const onScroll = () => {
+      const { y } = mainContainerRef?.current?.getBoundingClientRect?.() || {};
+      Object.values(blockRefs?.current || {})?.forEach((node) => {
+        // @ts-ignore
+        const { y: y2 } = node?.current?.getBoundingClientRect?.() || {};
+        if (y2 <= y) {
+          // @ts-ignore
+          if (node?.current) {
+            // @ts-ignore
+            node.current.className = addClassNames(
+              removeClassNames(
+                // @ts-ignore
+                (node?.current?.className || ''),
+                [
+                  'enable-border-radius',
+                ],
+              ),
+              [
+                'disable-border-radius',
+              ],
+            );
+          }
+        } else {
+          // @ts-ignore
+          if (node?.current) {
+            // @ts-ignore
+            node.current.className = addClassNames(
+              removeClassNames(
+                // @ts-ignore
+                (node?.current?.className || ''),
+                [
+                  'disable-border-radius',
+                ],
+              ),
+              [
+                'enable-border-radius',
+              ],
+            );
+          }
+        }
+      });
+    };
 
+    if (typeof window !== 'undefined') {
+      // @ts-ignore
+      mainContainerRef?.current?.addEventListener('scroll', onScroll);
+    }
+
+    return () => {
+      if (typeof window !== 'undefined') {
+        // @ts-ignore
+        mainContainerRef?.current?.removeEventListener('scroll', onScroll);
+      }
+    };
+  }, []);
+
+  const codeEditorMappingRef = useRef({});
+
+  const codeBlocks: {
+    block: BlockType;
+    element: Element;
+    index: number;
+  }[] = useMemo(() => {
+    const arr = [];
     const blocksCount = blocksFiltered?.length || 0;
 
     blocksFiltered.forEach((block: BlockType, idx: number) => {
@@ -796,8 +920,20 @@ function PipelineDetail({
         type,
         uuid,
       });
-      blockOutputRefs.current[path] = createRef();
-      blockRefs.current[path] = createRef();
+      blockOutputRefs.current[path] ||= createRef();
+      blockRefs.current[path] ||= createRef();
+
+      const originPath = buildBlockRefKey({
+        type,
+        uuid: block?.replicated_block || uuid,
+      });
+
+      if (block?.replicated_block) {
+        codeEditorMappingRef.current[originPath] ||= {
+          [uuid]: {},
+        };
+        codeEditorMappingRef.current[originPath][uuid] ||= createRef();
+      }
 
       let el;
       const isMarkdown = type === BlockTypeEnum.MARKDOWN;
@@ -813,132 +949,128 @@ function PipelineDetail({
         key = `${key}:${refreshTimestamp}`;
       }
 
-      if (isHidden) {
-        el = (
-          <HiddenBlock
-            block={block}
-            blocks={blocks}
-            key={key}
-            // @ts-ignore
-            onClick={() => setHiddenBlocks(prev => ({
-              ...prev,
-              [uuid]: !isHidden,
-            }))}
-            onDrop={onDrop}
-            ref={currentBlockRef}
-          />
-        );
-      } else {
-        el = (
-          <CodeBlock
-            addNewBlock={(
-              b: BlockRequestPayloadType,
-              downstreamBlocks?: BlockType[],
-            ) => {
-              setTextareaFocused(true);
-              const onCreateCallback = (block: BlockType) => {
-                if (downstreamBlocks?.length === 1) {
-                  const downstreamBlockUUID = downstreamBlocks[0]?.uuid;
-                  const upstreamsOfDownstreamBlock = downstreamBlocks[0]?.upstream_blocks || [];
-                  updateBlock({
-                    block: { uuid: downstreamBlockUUID },
-                    upstreamBlocks: [block.uuid, ...upstreamsOfDownstreamBlock],
-                  });
-                }
-                setSelectedBlock?.(block);
-              };
+      const onChangeCallbackMemo = (value: string) => onChangeCodeBlock(type, uuid, value);
+      const deleteBlockCallbackMemo = (b: BlockType) => {
+        deleteBlock(b);
+        setAnyInputFocused(false);
+      };
 
-              return addNewBlockAtIndex(
-                b,
-                sideBySideEnabled ? idx : idx + 1,
-                onCreateCallback,
-              );
-            }}
-            addNewBlockMenuOpenIdx={addNewBlockMenuOpenIdx}
-            addWidget={addWidget}
-            allBlocks={allBlocks}
-            allowCodeBlockShortcuts={allowCodeBlockShortcuts}
-            autocompleteItems={autocompleteItems}
-            block={block}
-            blockIdx={idx}
-            blockInteractions={blockInteractionsMapping?.[uuid]}
-            blockOutputRef={currentBlockOutputRef}
-            blockRefs={blockRefs}
-            blockTemplates={blockTemplates}
-            blocks={blocks}
-            containerRef={containerRef}
-            cursorHeight1={cursorHeight1}
-            cursorHeight2={cursorHeight2}
-            cursorHeight3={cursorHeight3}
-            dataProviders={dataProviders}
-            defaultValue={block.content}
-            deleteBlock={(b: BlockType) => {
-              deleteBlock(b);
-              setAnyInputFocused(false);
-            }}
-            disableShortcuts={disableShortcuts}
-            executionState={executionState}
-            fetchFileTree={fetchFileTree}
-            fetchPipeline={fetchPipeline}
-            globalDataProducts={globalDataProducts}
-            hideRunButton={isStreaming || isMarkdown || (isIntegration && isTransformer)}
-            interactionsMapping={interactionsMapping}
-            interruptKernel={interruptKernel}
-            key={key}
-            mainContainerRect={mainContainerRect}
-            mainContainerRef={mainContainerRef}
-            mainContainerWidth={mainContainerWidth}
-            messages={messages[uuid]}
-            noDivider={noDivider}
-            onCallbackChange={(value: string) => onChangeCallbackBlock(type, uuid, value)}
-            onChange={(value: string) => onChangeCodeBlock(type, uuid, value)}
-            onClickAddSingleDBTModel={onClickAddSingleDBTModel}
-            onDrop={onDrop}
-            openSidekickView={openSidekickView}
-            pipeline={pipeline}
-            project={project}
-            ref={currentBlockRef}
-            runBlock={runBlock}
-            runningBlocks={runningBlocks}
-            savePipelineContent={savePipelineContent}
-            scrollTogether={scrollTogether}
-            selected={selected}
-            setAddNewBlockMenuOpenIdx={setAddNewBlockMenuOpenIdx}
-            setAnyInputFocused={setAnyInputFocused}
-            setCreatingNewDBTModel={setCreatingNewDBTModel}
-            setEditingBlock={setEditingBlock}
-            setErrors={setErrors}
-            setMountedBlocks={setMountedBlocks}
-            setOutputBlocks={setOutputBlocks}
-            setSelected={(value: boolean) => setSelectedBlock(value === true ? block : null)}
-            setSelectedBlock={setSelectedBlock}
-            setSelectedOutputBlock={setSelectedOutputBlock}
-            setTextareaFocused={setTextareaFocused}
-            showBrowseTemplates={showBrowseTemplates}
-            showConfigureProjectModal={showConfigureProjectModal}
-            showDataIntegrationModal={showDataIntegrationModal}
-            showGlobalDataProducts={showGlobalDataProducts}
-            showUpdateBlockModal={showUpdateBlockModal}
-            sideBySideEnabled={sideBySideEnabled}
-            textareaFocused={selected && textareaFocused}
-            widgets={widgets}
-            windowWidth={windowWidth}
-          >
-            {sideBySideEnabled && isLast && (
-              <div
-                style={{
-                  paddingBottom: SIDE_BY_SIDE_VERTICAL_PADDING,
-                  paddingTop: SIDE_BY_SIDE_VERTICAL_PADDING,
-                }}
-              >
-                {addNewBlocksMemo}
-              </div>
-            )}
-          </CodeBlock>
-        );
-      }
+      arr.push(
+        <CodeBlock
+          addNewBlock={(
+            b: BlockRequestPayloadType,
+            downstreamBlocks?: BlockType[],
+          ) => {
+            setTextareaFocused(true);
+            const onCreateCallback = (block: BlockType) => {
+              if (downstreamBlocks?.length === 1) {
+                const downstreamBlockUUID = downstreamBlocks[0]?.uuid;
+                const upstreamsOfDownstreamBlock = downstreamBlocks[0]?.upstream_blocks || [];
+                updateBlock({
+                  block: { uuid: downstreamBlockUUID },
+                  upstreamBlocks: [block.uuid, ...upstreamsOfDownstreamBlock],
+                });
+              }
+              setSelectedBlock?.(block);
+            };
 
-      arr.push(el);
+            return addNewBlockAtIndex(
+              b,
+              sideBySideEnabled ? idx : idx + 1,
+              onCreateCallback,
+            );
+          }}
+          addNewBlockMenuOpenIdx={addNewBlockMenuOpenIdx}
+          addWidget={addWidget}
+          allBlocks={allBlocks}
+          allowCodeBlockShortcuts={allowCodeBlockShortcuts}
+          autocompleteItems={autocompleteItems}
+          block={block}
+          blockIdx={idx}
+          blockInteractions={blockInteractionsMapping?.[uuid]}
+          blockOutputRef={currentBlockOutputRef}
+          blockRefs={blockRefs}
+          blockTemplates={blockTemplates}
+          blocks={blocks}
+          codeEditorMappingRef={codeEditorMappingRef}
+          containerRef={containerRef}
+          cursorHeight1={cursorHeight1}
+          cursorHeight2={cursorHeight2}
+          cursorHeight3={cursorHeight3}
+          dataProviders={dataProviders}
+          defaultValue={block.content}
+          deleteBlock={deleteBlockCallbackMemo}
+          disableShortcuts={disableShortcuts}
+          executionState={executionState}
+          fetchFileTree={fetchFileTree}
+          fetchPipeline={fetchPipeline}
+          globalDataProducts={globalDataProducts}
+          hideRunButton={isStreaming || isMarkdown || (isIntegration && isTransformer)}
+          interactionsMapping={interactionsMapping}
+          interruptKernel={interruptKernel}
+          isHidden={isHidden}
+          key={key}
+          mainContainerRect={mainContainerRect}
+          mainContainerRef={mainContainerRef}
+          mainContainerWidth={mainContainerWidth}
+          messages={messages[uuid]}
+          noDivider={noDivider}
+          onCallbackChange={(value: string) => onChangeCallbackBlock(type, uuid, value)}
+          onChange={onChangeCallbackMemo}
+          onClickAddSingleDBTModel={onClickAddSingleDBTModel}
+          onDrop={onDrop}
+          onMountCallback={(editor) => {
+            if (block?.replicated_block) {
+              codeEditorMappingRef.current[originPath][uuid] = editor;
+            }
+          }}
+          openSidekickView={openSidekickView}
+          pipeline={pipeline}
+          project={project}
+          ref={currentBlockRef}
+          runBlock={runBlock}
+          runningBlocks={runningBlocks}
+          savePipelineContent={savePipelineContent}
+          scrollTogether={scrollTogether}
+          selected={selected}
+          setAddNewBlockMenuOpenIdx={setAddNewBlockMenuOpenIdx}
+          setAnyInputFocused={setAnyInputFocused}
+          setCreatingNewDBTModel={setCreatingNewDBTModel}
+          setEditingBlock={setEditingBlock}
+          setErrors={setErrors}
+          setHiddenBlocks={setHiddenBlocks}
+          setMountedBlocks={setMountedBlocks}
+          setOutputBlocks={setOutputBlocks}
+          setScrollTogether={setScrollTogether}
+          setSelected={(value: boolean) => setSelectedBlock(value === true ? block : null)}
+          setSelectedBlock={setSelectedBlock}
+          setSelectedOutputBlock={setSelectedOutputBlock}
+          setSideBySideEnabled={setSideBySideEnabled}
+          setTextareaFocused={setTextareaFocused}
+          showBlockBrowserModal={showBlockBrowserModal}
+          showBrowseTemplates={showBrowseTemplates}
+          showConfigureProjectModal={showConfigureProjectModal}
+          showDataIntegrationModal={showDataIntegrationModal}
+          showGlobalDataProducts={showGlobalDataProducts}
+          showUpdateBlockModal={showUpdateBlockModal}
+          sideBySideEnabled={sideBySideEnabled}
+          textareaFocused={selected && textareaFocused}
+          updatePipeline={updatePipeline}
+          widgets={widgets}
+          windowWidth={windowWidth}
+        >
+          {sideBySideEnabled && isLast && (
+            <div
+              style={{
+                paddingBottom: SIDE_BY_SIDE_VERTICAL_PADDING,
+                paddingTop: SIDE_BY_SIDE_VERTICAL_PADDING,
+              }}
+            >
+              {addNewBlocksMemo}
+            </div>
+          )}
+        </CodeBlock>,
+      );
     });
 
     return arr;
@@ -1001,6 +1133,9 @@ function PipelineDetail({
     setSelectedBlock,
     setSelectedOutputBlock,
     setTextareaFocused,
+    setScrollTogether,
+    setSideBySideEnabled,
+    showBlockBrowserModal,
     showBrowseTemplates,
     showConfigureProjectModal,
     showDataIntegrationModal,
@@ -1009,6 +1144,7 @@ function PipelineDetail({
     sideBySideEnabled,
     textareaFocused,
     updateBlock,
+    updatePipeline,
     widgets,
     windowWidth,
   ]);
@@ -1053,6 +1189,56 @@ function PipelineDetail({
     setSelectedStream,
   ]);
 
+  const addBlockFromFilePath = useCallback((filePath: string) => {
+    const isAddingFromBlock =
+      typeof lastBlockIndex === 'undefined' || lastBlockIndex === null;
+
+    addNewBlockAtIndex(
+      buildBlockFromFilePath({
+        blockIndex: lastBlockIndex,
+        blocks,
+        filePath,
+        isNewBlock: creatingNewDBTModel,
+        name: dbtModelName,
+        repoPathRelativeRoot: status?.repo_path_relative_root,
+      }),
+      (isAddingFromBlock
+        ? numberOfBlocks
+        : lastBlockIndex + 1
+      ) - (sideBySideEnabled ? 1 : 0),
+      setSelectedBlock,
+    );
+
+    closeAddDBTModelPopup();
+    setTextareaFocused(true);
+  }, [
+    addNewBlockAtIndex,
+    blocks,
+    closeAddDBTModelPopup,
+    creatingNewDBTModel,
+    dbtModelName,
+    lastBlockIndex,
+    numberOfBlocks,
+    setSelectedBlock,
+    setTextareaFocused,
+    sideBySideEnabled,
+    status,
+  ]);
+
+  useEffect(() => {
+    if (entered && project) {
+      setTimeout(() => setVisibleOverlay(false), ANIMATION_DURATION)
+    }
+  }, [entered, project]);
+
+  const onSelectBlockFile = useCallback((blockUUID: string, blockType: BlockTypeEnum, filePath: string) => addBlockFromFilePath(filePath), [addBlockFromFilePath]) ;
+
+  const onOpenFile = useCallback((filePath: string, isFolder: boolean) => {
+    if (!isFolder) {
+        addBlockFromFilePath(filePath)
+      }
+  }, [addBlockFromFilePath]);
+
   return (
     <DndProvider backend={HTML5Backend}>
       <PipelineContainerStyle ref={containerRef}>
@@ -1060,7 +1246,7 @@ function PipelineDetail({
           <CSSTransition
             classNames="pipeline-detail"
             in={visible}
-            onEntered={() => setTimeout(() => setVisibleOverlay(false), ANIMATION_DURATION)}
+            onEntered={() => setEntered(true)}
             timeout={1}
           >
             <OverlayStyle />
@@ -1088,6 +1274,7 @@ function PipelineDetail({
       )}
 
       {sideBySideEnabled && (
+        // @ts-ignore
         <div style={{ position: 'relative' }}>
           {column1ScrollMemo}
           {codeBlocks}
@@ -1109,53 +1296,8 @@ function PipelineDetail({
         >
           <FileSelectorPopup
             blocks={blocks}
-            creatingNewDBTModel={creatingNewDBTModel}
             dbtModelName={dbtModelName}
-            files={files}
             onClose={closeAddDBTModelPopup}
-            onOpenFile={(filePath: string) => {
-              let finalFilePath = filePath;
-              if (creatingNewDBTModel) {
-                let blockName = addUnderscores(dbtModelName || randomNameGenerator());
-                const sqlExtension = `.${FileExtensionEnum.SQL}`;
-                if (blockName.endsWith(sqlExtension)) {
-                  blockName = blockName.slice(0, -4);
-                }
-                finalFilePath = `${filePath}${path.sep}${blockName}.${FileExtensionEnum.SQL}`;
-              }
-
-              const newBlock: BlockRequestPayloadType = {
-                configuration: {
-                  file_path: finalFilePath,
-                  limit: DEFAULT_SQL_CONFIG_KEY_LIMIT,
-                },
-                language: BlockLanguageEnum.SQL,
-                name: removeExtensionFromFilename(finalFilePath),
-                type: BlockTypeEnum.DBT,
-              };
-              if (creatingNewDBTModel) {
-                newBlock.content = `--Docs: https://docs.mage.ai/dbt/sources
-`;
-              }
-
-              const isAddingFromBlock =
-                typeof lastBlockIndex === 'undefined' || lastBlockIndex === null;
-              const block = blocks[isAddingFromBlock ? blocks.length - 1 : lastBlockIndex];
-              const upstreamBlocks = block ? getUpstreamBlockUuids(block, newBlock) : [];
-
-              addNewBlockAtIndex({
-                  ...newBlock,
-                  upstream_blocks: upstreamBlocks,
-                }, (isAddingFromBlock
-                  ? numberOfBlocks
-                  : lastBlockIndex + 1
-                ) - (sideBySideEnabled ? 1 : 0),
-                setSelectedBlock,
-              );
-
-              closeAddDBTModelPopup();
-              setTextareaFocused(true);
-            }}
             setDbtModelName={setDbtModelName}
           />
         </ClickOutside>

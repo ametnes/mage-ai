@@ -30,11 +30,16 @@ class S3Storage(BaseStorage):
             path += '/'
         return self.path_exists(path)
 
-    def listdir(self, path: str, suffix: str = None) -> List[str]:
+    def listdir(
+        self,
+        path: str,
+        suffix: str = None,
+        max_results: int = None,
+    ) -> List[str]:
         if not path.endswith('/'):
             path += '/'
         path = s3_url_path(path)
-        keys = self.client.listdir(path, suffix=suffix)
+        keys = self.client.listdir(path, suffix=suffix, max_results=max_results)
         return [k[len(path):].rstrip('/') for k in keys]
 
     def makedirs(self, path: str, **kwargs) -> None:
@@ -96,6 +101,10 @@ class S3Storage(BaseStorage):
     def read_parquet(self, file_path: str, **kwargs) -> pd.DataFrame:
         buffer = io.BytesIO(self.client.get_object(s3_url_path(file_path)).read())
         return pd.read_parquet(buffer, **kwargs)
+
+    def read_polars_parquet(self, file_path: str, **kwargs) -> pl.DataFrame:
+        buffer = io.BytesIO(self.client.get_object(s3_url_path(file_path)).read())
+        return pl.read_parquet(buffer, **kwargs)
 
     def write_parquet(self, df: pd.DataFrame, file_path: str) -> None:
         buffer = io.BytesIO()

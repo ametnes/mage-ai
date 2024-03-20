@@ -10,7 +10,7 @@ from jinja2 import Template
 
 from mage_ai.data_preparation.executors.pipeline_executor import PipelineExecutor
 from mage_ai.data_preparation.logging.logger import DictLogger
-from mage_ai.data_preparation.models.constants import BlockType
+from mage_ai.data_preparation.models.constants import BlockLanguage, BlockType
 from mage_ai.data_preparation.models.pipeline import Pipeline
 from mage_ai.data_preparation.shared.stream import StreamToLogger
 from mage_ai.data_preparation.shared.utils import get_template_vars
@@ -107,18 +107,28 @@ class StreamingPipelineExecutor(PipelineExecutor):
 
         if global_vars is None:
             global_vars = dict()
-        source_config = self.__interpolate_vars(
-            self.source_block.content,
-            global_vars=global_vars,
-        )
-        source = SourceFactory.get_source(
-            source_config,
-            checkpoint_path=os.path.join(
-                self.pipeline.pipeline_variables_dir,
-                'streaming_checkpoint',
-            ),
-        )
 
+        # Initialize source block
+        if self.source_block.language == BlockLanguage.PYTHON:
+            source = SourceFactory.get_python_source(
+                self.source_block.content,
+                global_vars=global_vars,
+            )
+        else:
+            # Default to YAML config
+            source_config = self.__interpolate_vars(
+                self.source_block.content,
+                global_vars=global_vars,
+            )
+            source = SourceFactory.get_source(
+                source_config,
+                checkpoint_path=os.path.join(
+                    self.pipeline.pipeline_variables_dir,
+                    'streaming_checkpoint',
+                ),
+            )
+
+        # Initialize destination blocks
         sinks_by_uuid = dict()
         for sink_block in self.sink_blocks:
             sinks_by_uuid[sink_block.uuid] = SinkFactory.get_sink(
@@ -190,6 +200,16 @@ class StreamingPipelineExecutor(PipelineExecutor):
                 **merge_dict(global_vars, kwargs),
             )
 
+        def handle_event(message, **kwargs):
+            outputs_by_block = dict()
+            outputs_by_block[self.source_block.uuid] = [message]
+
+            handle_batch_events_recursively(
+                self.source_block,
+                outputs_by_block,
+                **merge_dict(global_vars, kwargs),
+            )
+
         # Long running method
         try:
             if source.consume_method == SourceConsumeMethod.BATCH_READ:
@@ -200,6 +220,8 @@ class StreamingPipelineExecutor(PipelineExecutor):
                     loop.run_until_complete(source.read_async(handler=handle_event_async))
                 else:
                     asyncio.run(source.read_async(handler=handle_event_async))
+            elif source.consume_method == SourceConsumeMethod.READ:
+                source.read(handler=handle_event)
         finally:
             source.destroy()
             for sink in sinks_by_uuid.values():

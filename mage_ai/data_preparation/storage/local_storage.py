@@ -19,12 +19,27 @@ class LocalStorage(BaseStorage):
     def isdir(self, path: str) -> bool:
         return os.path.isdir(path)
 
-    def listdir(self, path: str, suffix: str = None) -> List[str]:
+    def listdir(
+        self,
+        path: str,
+        suffix: str = None,
+        max_results: int = None,
+    ) -> List[str]:
+        paths = []
         if not os.path.exists(path):
-            return []
-        paths = os.listdir(path)
+            return paths
+
+        if max_results is not None:
+            with os.scandir(path) as it:
+                for idx, entry in enumerate(it):
+                    paths.append(entry.name)
+                    if idx >= max_results - 1:
+                        break
+        else:
+            paths = os.listdir(path)
         if suffix is not None:
             paths = [p for p in paths if p.endswith(suffix)]
+
         return paths
 
     def makedirs(self, path: str, **kwargs) -> None:
@@ -74,7 +89,7 @@ class LocalStorage(BaseStorage):
     def write_json_file(self, file_path: str, data) -> None:
         dirname = os.path.dirname(file_path)
         if not os.path.isdir(dirname):
-            os.mkdir(dirname)
+            os.makedirs(dirname, exist_ok=True)
 
         with open(file_path, 'w') as file:
             simplejson.dump(
@@ -95,6 +110,9 @@ class LocalStorage(BaseStorage):
 
     def read_parquet(self, file_path: str, **kwargs) -> pd.DataFrame:
         return pd.read_parquet(file_path, engine='pyarrow')
+
+    def read_polars_parquet(self, file_path: str, **kwargs) -> pl.DataFrame:
+        return pl.read_parquet(file_path, use_pyarrow=True)
 
     def write_csv(self, df: pd.DataFrame, file_path: str) -> None:
         File.create_parent_directories(file_path)
@@ -135,3 +153,15 @@ class LocalStorage(BaseStorage):
             except Exception as err:
                 if is_debug():
                     print(f'[ERROR] LocalStorage.read_async: {err}')
+
+    def read(self, file_path: str) -> str:
+        dirname = os.path.dirname(file_path)
+        if not os.path.isdir(dirname):
+            os.mkdir(dirname)
+
+        with open(file_path, mode='r') as file:
+            try:
+                return file.read()
+            except Exception as err:
+                if is_debug():
+                    print(f'[ERROR] LocalStorage.read: {err}')

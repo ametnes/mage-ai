@@ -24,6 +24,7 @@ import {
   SortDirectionEnum,
   SortQueryEnum,
   TIMEZONE_TOOLTIP_PROPS,
+  getRunStatusTextProps,
 } from '@components/shared/Table/constants';
 import { UNIT } from '@oracle/styles/units/spacing';
 import { dateFormatLong, datetimeInLocalTimezone, utcStringToElapsedTime } from '@utils/date';
@@ -34,13 +35,15 @@ import { openSaveFileDialog } from '@components/PipelineDetail/utils';
 import { queryFromUrl } from '@utils/url';
 import { shouldDisplayLocalTimezone } from '@components/settings/workspace/utils';
 
-export const DEFAULT_SORTABLE_BR_COL_INDEXES = [0, 1, 3, 4, 5];
+// The DEFAULT_SORTABLE_BR_COL_INDEXES and COL_IDX_TO_BLOCK_RUN_ATTR_MAPPING
+// must be updated if the columns in the Block Runs table are rearranged.
+export const DEFAULT_SORTABLE_BR_COL_INDEXES = [0, 2, 4, 5, 6];
 export const COL_IDX_TO_BLOCK_RUN_ATTR_MAPPING = {
   0: 'status',
-  1: 'block_uuid',
-  3: 'created_at',
-  4: 'started_at',
-  5: 'completed_at',
+  2: 'block_uuid',
+  4: 'created_at',
+  5: 'started_at',
+  6: 'completed_at',
 };
 
 type BlockRunsTableProps = {
@@ -119,10 +122,14 @@ function BlockRunsTable({
   );
 
   const timezoneTooltipProps = displayLocalTimezone ? TIMEZONE_TOOLTIP_PROPS : {};
-  const columnFlex = [1, 2, 2, 1, 1, 1, null, null];
+  const columnFlex = [1, null, 2, 2, 1, 1, 1, null];
   const columns = [
     {
       uuid: 'Status',
+    },
+    {
+      center: true,
+      uuid: 'Logs',
     },
     {
       uuid: 'Block',
@@ -141,9 +148,6 @@ function BlockRunsTable({
     {
       ...timezoneTooltipProps,
       uuid: 'Completed at',
-    },
-    {
-      uuid: 'Logs',
     },
   ];
 
@@ -194,16 +198,22 @@ function BlockRunsTable({
 
         const rows = [
           <Text
-            danger={RunStatus.FAILED === status}
-            default={RunStatus.CANCELLED === status}
-            info={RunStatus.INITIAL === status}
+            {...getRunStatusTextProps(status)}
             key={`${id}_status`}
-            monospace
-            success={RunStatus.COMPLETED === status}
-            warning={RunStatus.RUNNING === status}
           >
             {status}
           </Text>,
+          <Button
+            default
+            iconOnly
+            key={`${id}_logs`}
+            noBackground
+            onClick={() => Router.push(
+              `/pipelines/${pipelineUUID}/logs?block_run_id[]=${id}`,
+            )}
+          >
+            <Logs default size={2 * UNIT} />
+          </Button>,
           <NextLink
             as={`/pipelines/${pipelineUUID}/edit?block_uuid=${blockUUID}`}
             href={'/pipelines/[pipeline]/edit'}
@@ -291,17 +301,6 @@ function BlockRunsTable({
               )
             }
           </Text>,
-          <Button
-            default
-            iconOnly
-            key={`${id}_logs`}
-            noBackground
-            onClick={() => Router.push(
-              `/pipelines/${pipelineUUID}/logs?block_run_id[]=${id}`,
-            )}
-          >
-            <Logs default size={2 * UNIT} />
-          </Button>,
         ];
 
         if (isStandardPipeline) {

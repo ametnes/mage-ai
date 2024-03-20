@@ -6,6 +6,11 @@ export interface InstanceType {
   task_arn?: string;
 }
 
+export enum WorkspaceQueryEnum {
+  ALL = '__all__',
+  NAMESPACE = 'namespace[]',
+}
+
 export default interface WorkspaceType {
   access?: number;
   cluster_type?: string;
@@ -13,4 +18,5 @@ export default interface WorkspaceType {
   name: string;
   project_uuid?: string;
   repo_path?: string;
+  url?: string;
 }

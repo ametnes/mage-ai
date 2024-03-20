@@ -1,12 +1,15 @@
 from typing import Dict, List, Tuple
 
 import pandas as pd
+import simplejson
 from snowflake.connector.pandas_tools import write_pandas
 
 from mage_integrations.connections.snowflake import Snowflake as SnowflakeConnection
 from mage_integrations.destinations.constants import (
+    COLUMN_FORMAT_DATETIME,
     COLUMN_TYPE_ARRAY,
     COLUMN_TYPE_OBJECT,
+    COLUMN_TYPE_STRING,
     UNIQUE_CONFLICT_METHOD_UPDATE,
 )
 from mage_integrations.destinations.snowflake.utils import (
@@ -22,6 +25,7 @@ from mage_integrations.destinations.sql.utils import (
     column_type_mapping,
 )
 from mage_integrations.utils.array import batch
+from mage_integrations.utils.parsers import encode_complex
 
 
 class Snowflake(Destination):
@@ -56,6 +60,7 @@ class Snowflake(Destination):
         schema_name: str,
         stream: str,
         table_name: str,
+        temp_table: bool = False,
         database_name: str = None,
         unique_constraints: List[str] = None,
     ) -> List[str]:
@@ -65,14 +70,15 @@ class Snowflake(Destination):
                 convert_column_type,
                 lambda item_type_converted: 'ARRAY',
             ),
+            column_identifier=self.quote,
             columns=schema['properties'].keys(),
             full_table_name=self.full_table_name(
                 database_name,
                 schema_name,
                 table_name,
             ),
+            create_temporary_table=temp_table,
             unique_constraints=unique_constraints,
-            column_identifier=self.quote,
             use_lowercase=self.use_lowercase,
         )
 
@@ -100,7 +106,7 @@ FROM {database_name}.INFORMATION_SCHEMA.COLUMNS
 WHERE TABLE_SCHEMA = '{schema_name}' AND TABLE_NAME ILIKE '%{table_name}%'
         """
         results = self.build_connection().load(query)
-        current_columns = [r[0].lower() for r in results]
+        current_columns = [r[0].lower() if self.use_lowercase else r[0] for r in results]
         schema_columns = schema['properties'].keys()
 
         new_columns = [c for c in schema_columns
@@ -337,6 +343,8 @@ WHERE TABLE_SCHEMA = '{schema_name}' AND TABLE_NAME = '{table_name}'
         database: str,
         schema: str,
         table: str,
+        connection=None,
+        temp_table: bool = False,
     ) -> List[List[tuple]]:
         """
         Write a Pandas DataFrame to a table in a Snowflake database.
@@ -359,19 +367,31 @@ WHERE TABLE_SCHEMA = '{schema_name}' AND TABLE_NAME = '{table_name}'
         """
         self.logger.info(
             f'write_pandas to: {database}.{schema}.{table}')
-        snowflake_connection = self.build_connection()
-        connection = snowflake_connection.build_connection()
+
+        new_connection_created = False
+        snowflake_connection = None
+        if connection is None:
+            snowflake_connection = self.build_connection()
+            connection = snowflake_connection.build_connection()
+            new_connection_created
         if self.disable_double_quotes:
             df.columns = [col.upper() for col in df.columns]
-        success, num_chunks, num_rows, output = write_pandas(
-            connection,
-            df,
-            table.upper() if self.disable_double_quotes else table,
+
+        kwargs = dict(
             database=database.upper() if self.disable_double_quotes else database,
             schema=schema.upper() if self.disable_double_quotes else schema,
             auto_create_table=False,
         )
-        snowflake_connection.close_connection(connection)
+        if temp_table:
+            kwargs['table_type'] = 'temp'
+        success, num_chunks, num_rows, output = write_pandas(
+            connection,
+            df,
+            table.upper() if self.disable_double_quotes else table,
+            **kwargs,
+        )
+        if new_connection_created and snowflake_connection is not None:
+            snowflake_connection.close_connection(connection)
         self.logger.info(
             f'write_pandas completed: {success}, {num_chunks} chunks, {num_rows} rows.')
         self.logger.info(f'write_pandas output: {output}')
@@ -431,9 +451,13 @@ WHERE TABLE_SCHEMA = '{schema_name}' AND TABLE_NAME = '{table_name}'
                 self.logger.info(f'Skip executing empty query_strings: {query_strings}')
 
             df = pd.DataFrame([d['record'] for d in record_data])
-            df.columns = df.columns.str.lower()
+
             self.logger.info(f'Batch upload to Snowflake: {df.shape[0]} rows.')
             self.logger.info(f'Columns: {df.columns}')
+
+            # Clean dataframe column names and values
+            df = self.clean_df(df, stream)
+
             database = self.config.get(self.DATABASE_CONFIG_KEY)
             schema = self.config.get(self.SCHEMA_CONFIG_KEY)
             table = self.config.get(self.TABLE_CONFIG_KEY)
@@ -448,17 +472,30 @@ WHERE TABLE_SCHEMA = '{schema_name}' AND TABLE_NAME = '{table_name}'
                                 schema_name=schema,
                                 stream=None,
                                 table_name=f'temp_{table}',
+                                temp_table=True,
                                 database_name=database,
                                 unique_constraints=unique_constraints,
                             )
-
-                results += self.build_connection().execute(
-                    drop_temp_table_command + create_temp_table_command, commit=True)
+                # Run commands in one Snowflake session to leverage TEMP table
+                snowflake_connection = self.build_connection()
+                connection = snowflake_connection.build_connection()
+                results += snowflake_connection.execute(
+                    drop_temp_table_command + create_temp_table_command,
+                    commit=False,
+                    connection=connection,
+                )
 
                 # Outputs of write_dataframe_to_table are for temporary table only, thus not added
                 # to results
                 # results += self.write_dataframe_to_table(df, database, schema, f'temp_{table}')
-                self.write_dataframe_to_table(df, database, schema, f'temp_{table}')
+                self.write_dataframe_to_table(
+                    df,
+                    database,
+                    schema,
+                    f'temp_{table}',
+                    connection=connection,
+                    temp_table=True,
+                )
                 self.logger.info(
                     f'write_dataframe_to_table completed to: {full_table_name_temp}')
 
@@ -472,14 +509,68 @@ WHERE TABLE_SCHEMA = '{schema_name}' AND TABLE_NAME = '{table_name}'
 
                 self.logger.info(f'Merging {full_table_name_temp} into {full_table_name}')
                 self.logger.info(f'Dropping temporary table: {full_table_name_temp}')
-                results += self.build_connection().execute(
-                    merge_command + drop_temp_table_command, commit=True)
+                results += snowflake_connection.execute(
+                    merge_command + drop_temp_table_command,
+                    commit=True,
+                    connection=connection,
+                )
+                # Close connection after finishing running all commands
+                snowflake_connection.close_connection(connection)
                 self.logger.info(f'Merged and dropped temporary table: {full_table_name_temp}')
             else:
                 results += self.write_dataframe_to_table(df, database, schema, table)
                 self.logger.info(f'write_dataframe_to_table completed to {full_table_name}')
 
             return results
+
+    def clean_df(self, df: pd.DataFrame, stream: str):
+        # Clean column names in the dataframe
+        col_mapping = {col: self.clean_column_name(col) for col in df.columns}
+        df = df.rename(columns=col_mapping)
+
+        # Serialize the dict or list to string
+        def serialize_obj(val):
+            if isinstance(val, dict) or isinstance(val, list):
+                return simplejson.dumps(
+                    val,
+                    default=encode_complex,
+                    ignore_nan=True,
+                )
+            return str(val)
+
+        def remove_empty_dicts(val: Dict):
+            # Remove empty dicts to avoid
+            # insertion issues with write_pandas and
+            # pyarrow
+            if isinstance(val, dict) and len(val) == 0:
+                return None
+            # Checks if nested dict also contain
+            # a empty dict
+            elif isinstance(val, dict) and len(val) != 0:
+                for key, value in val.items():
+                    if isinstance(value, dict) and len(value) == 0:
+                        val[key] = None
+            return val
+
+        mapping = column_type_mapping(
+            self.schemas[stream],
+            convert_column_type,
+            lambda item_type_converted: 'ARRAY',
+        )
+
+        for col in col_mapping.keys():
+            clean_col_name = col_mapping[col]
+            df_col_dropna = df[clean_col_name].dropna()
+            if df_col_dropna.count() == 0:
+                continue
+            col_type = mapping[col].get('type')
+            col_settings = mapping[col].get('column_settings')
+            if COLUMN_TYPE_STRING == col_type \
+                    and COLUMN_FORMAT_DATETIME != col_settings.get('format'):
+                df[clean_col_name] = df[clean_col_name].apply(lambda x: serialize_obj(x))
+            elif COLUMN_TYPE_OBJECT == col_type:
+                df[clean_col_name] = df[clean_col_name].apply(lambda x: remove_empty_dicts(x))
+        return df
 
 
 if __name__ == '__main__':

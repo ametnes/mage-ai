@@ -92,13 +92,14 @@ function PipelineInteractions({
   const refNewInteractionUUID = useRef(null);
   const refMostRecentlyAddedInteraction = useRef(null);
 
-  const [lastSaved, setLastSaved] = useState<Number>(null);
-  const [lastUpdated, setLastUpdated] = useState<Number>(null);
+  const [lastSaved, setLastSaved] = useState<number>(null);
+  const [lastUpdated, setLastUpdated] = useState<number>(null);
   const [touched, setTouched] = useState<boolean>(false);
 
   const [newInteractionUUID, setNewInteractionUUID] = useState<string>(null);
   const [isAddingNewInteraction, setIsAddingNewInteraction] = useState<boolean>(false);
   const [mostRecentlyAddedInteractionUUID, setMostRecentlyAddedInteractionUUID] = useState<string>(null);
+  const isLoadingInteractions = !blockInteractionsMappingProp;
 
   const [interactionsMappingState, setInteractionsMappingState] = useState<{
     [interactionUUID: string]: InteractionType;
@@ -363,7 +364,7 @@ function PipelineInteractions({
         uuid: blockUUID,
       } = block || {
         uuid: null,
-      }
+      };
 
       const blockInteractions = blockInteractionsMapping?.[blockUUID] || [];
       const hasBlockInteractions = blockInteractions?.length >= 1;
@@ -372,6 +373,7 @@ function PipelineInteractions({
         <Button
           beforeIcon={hasBlockInteractions ? <Edit /> : <Add />}
           compact
+          disabled={isLoadingInteractions}
           onClick={(e) => {
             pauseEvent(e);
             setSelectedBlock(block);
@@ -391,8 +393,6 @@ function PipelineInteractions({
           key={blockUUID}
           noBorderRadius={idx >= 1}
           noPaddingContent
-          titleXPadding={PADDING_UNITS * UNIT}
-          titleYPadding={1.5 * UNIT}
           title={(
             <FlexContainer
               alignItems="center"
@@ -411,6 +411,8 @@ function PipelineInteractions({
               )}
             </FlexContainer>
           )}
+          titleXPadding={PADDING_UNITS * UNIT}
+          titleYPadding={1.5 * UNIT}
         >
           <ContainerStyle
             noBackground
@@ -426,8 +428,8 @@ function PipelineInteractions({
                 >
                   <BlockInteractionController
                     blockInteraction={blockInteraction}
-                    containerWidth={containerWidth}
                     containerRef={containerRef}
+                    containerWidth={containerWidth}
                     interaction={interactionsMapping?.[blockInteraction?.uuid]}
                     setInteractionsMapping={setInteractionsMapping}
                     showVariableUUID
@@ -436,17 +438,18 @@ function PipelineInteractions({
               ))}
             </Spacing>
           </ContainerStyle>
-        </AccordionPanel>
+        </AccordionPanel>,
       );
     });
 
     return arr;
   }, [
+    blockInteractionsMapping,
     blocks,
     containerRef,
     containerWidth,
     interactionsMapping,
-    setBlockInteractionsMapping,
+    isLoadingInteractions,
     setInteractionsMapping,
     setSelectedBlock,
   ]);
@@ -496,6 +499,146 @@ function PipelineInteractions({
     editingBlockInteractions,
   ]);
 
+  const addBlockInteractionButtonMemo = useMemo(() => {
+    const hasItems = editingBlockInteractions?.length >= 1;
+
+    return (
+      <FlexContainer alignItems="center">
+        {!isAddingNewInteraction && (
+          <>
+            <Button
+              beforeIcon={<Add />}
+              compact={hasItems}
+              onClick={(e) => {
+                pauseEvent(e);
+                setIsAddingNewInteraction(true);
+                setTimeout(() => refNewInteractionUUID?.current?.focus(), 1);
+              }}
+              primary
+              small={hasItems}
+            >
+              Create new set of interactions
+            </Button>
+
+            {/*<Spacing mr={1} />
+
+            <Button
+              beforeIcon={<Add />}
+              compact
+              // onClick={() => setPermissions(prev => prev.concat([{
+              //   roles: [],
+              //   triggers: [],
+              // }]))}
+              secondary
+              small
+            >
+              Add from existing interactions
+            </Button>*/}
+          </>
+        )}
+
+        {isAddingNewInteraction && (
+          <>
+            <TextInput
+              compact
+              monospace
+              onChange={(e) => {
+                pauseEvent(e);
+                setNewInteractionUUID(e.target.value);
+              }}
+              onClick={e => pauseEvent(e)}
+              ref={refNewInteractionUUID}
+              small
+              value={newInteractionUUID || ''}
+            />
+
+            <Spacing mr={1} />
+
+            <Button
+              compact={hasItems}
+              loading={isLoadingCreateInteraction}
+              onClick={(e) => {
+                pauseEvent(e);
+
+                createInteraction({
+                  block_uuid: editingBlock?.uuid,
+                  inputs: {},
+                  layout: [],
+                  uuid: `${newInteractionUUID}.${BlockLanguageEnum.YAML}`,
+                  variables: {},
+                // @ts-ignore
+                }).then(({
+                  data,
+                }) => {
+                  if (data?.error) {
+                    return;
+                  }
+                  const interaction = data?.interaction;
+                  const interactionUUID = interaction?.uuid;
+
+                  updateBlockInteractionAtIndex(
+                    editingBlock?.uuid,
+                    editingBlockInteractions?.length || 0,
+                    {
+                      uuid: interactionUUID,
+                    },
+                  );
+                  setInteractionsMapping(prev => ({
+                    ...prev,
+                    [interactionUUID]: interaction,
+                  }));
+
+                  setTimeout(
+                    () => {
+                      refMostRecentlyAddedInteraction?.current?.scrollIntoView()
+                    },
+                    ANIMATION_DURATION_CONTENT + 100,
+                  );
+                });
+
+                setIsAddingNewInteraction(false);
+                setMostRecentlyAddedInteractionUUID(newInteractionUUID);
+                setNewInteractionUUID(null);
+              }}
+              primary
+              small={hasItems}
+            >
+              Save interaction
+            </Button>
+
+            <Spacing mr={1} />
+
+            <Button
+              compact={hasItems}
+              onClick={(e) => {
+                pauseEvent(e);
+
+                setIsAddingNewInteraction(false);
+                setNewInteractionUUID(null);
+              }}
+              secondary
+              small={hasItems}
+            >
+              Cancel
+            </Button>
+          </>
+        )}
+      </FlexContainer>
+    );
+  }, [
+    createInteraction,
+    editingBlock,
+    editingBlockInteractions,
+    isAddingNewInteraction,
+    isLoadingCreateInteraction,
+    newInteractionUUID,
+    setInteractionsMapping,
+    setIsAddingNewInteraction,
+    setMostRecentlyAddedInteractionUUID,
+    setNewInteractionUUID,
+    updateBlockInteractionAtIndex,
+  ]);
+
   return (
     <Spacing
       p={PADDING_UNITS}
@@ -526,7 +669,8 @@ function PipelineInteractions({
                   <Button
                     beforeIcon={<Add />}
                     compact
-                    onClick={() => setPermissions(prev => prev.concat([{
+                    disabled={isLoadingInteractions}
+                    onClick={() => setPermissions(prev => prev?.concat([{
                       roles: [],
                       triggers: [],
                     }]))}
@@ -574,125 +718,7 @@ function PipelineInteractions({
                   </Headline>
                 </Spacing>
 
-                <FlexContainer alignItems="center">
-                  {!isAddingNewInteraction && (
-                    <>
-                      <Button
-                        beforeIcon={<Add />}
-                        compact
-                        onClick={(e) => {
-                          pauseEvent(e);
-                          setIsAddingNewInteraction(true);
-                          setTimeout(() => refNewInteractionUUID?.current?.focus(), 1);
-                        }}
-                        primary
-                        small
-                      >
-                        Create new set of interactions
-                      </Button>
-
-                      {/*<Spacing mr={1} />
-
-                      <Button
-                        beforeIcon={<Add />}
-                        compact
-                        // onClick={() => setPermissions(prev => prev.concat([{
-                        //   roles: [],
-                        //   triggers: [],
-                        // }]))}
-                        secondary
-                        small
-                      >
-                        Add from existing interactions
-                      </Button>*/}
-                    </>
-                  )}
-
-                  {isAddingNewInteraction && (
-                    <>
-                      <TextInput
-                        compact
-                        monospace
-                        onChange={(e) => {
-                          pauseEvent(e);
-                          setNewInteractionUUID(e.target.value);
-                        }}
-                        onClick={e => pauseEvent(e)}
-                        ref={refNewInteractionUUID}
-                        small
-                        value={newInteractionUUID || ''}
-                      />
-
-                      <Spacing mr={1} />
-
-                      <Button
-                        compact
-                        loading={isLoadingCreateInteraction}
-                        onClick={(e) => {
-                          pauseEvent(e);
-
-                          createInteraction({
-                            block_uuid: editingBlock?.uuid,
-                            inputs: {},
-                            layout: [],
-                            uuid: `${newInteractionUUID}.${BlockLanguageEnum.YAML}`,
-                            variables: {},
-                          // @ts-ignore
-                          }).then(({
-                            data: {
-                              interaction,
-                            },
-                          }) => {
-                            const interactionUUID = interaction?.uuid;
-
-                            updateBlockInteractionAtIndex(
-                              editingBlock?.uuid,
-                              editingBlockInteractions?.length || 0,
-                              {
-                                uuid: interactionUUID,
-                              },
-                            );
-                            setInteractionsMapping(prev => ({
-                              ...prev,
-                              [interactionUUID]: interaction,
-                            }));
-
-                            setTimeout(
-                              () => {
-                                refMostRecentlyAddedInteraction?.current?.scrollIntoView()
-                              },
-                              ANIMATION_DURATION_CONTENT + 100,
-                            );
-                          });
-
-                          setIsAddingNewInteraction(false);
-                          setMostRecentlyAddedInteractionUUID(newInteractionUUID);
-                          setNewInteractionUUID(null);
-                        }}
-                        primary
-                        small
-                      >
-                        Save interaction
-                      </Button>
-
-                      <Spacing mr={1} />
-
-                      <Button
-                        compact
-                        onClick={(e) => {
-                          pauseEvent(e);
-
-                          setIsAddingNewInteraction(false);
-                          setNewInteractionUUID(null);
-                        }}
-                        secondary
-                        small
-                      >
-                        Cancel
-                      </Button>
-                    </>
-                  )}
-                </FlexContainer>
+                {editingBlockInteractions?.length >= 1 && addBlockInteractionButtonMemo}
               </FlexContainer>
 
               <Text default>
@@ -700,25 +726,29 @@ function PipelineInteractions({
               </Text>
             </Spacing>
 
-            <FlexContainer alignItems="center">
-              <Text bold large>
-                Variables
-              </Text>
+            {!editingBlockInteractions?.length && addBlockInteractionButtonMemo}
 
-              <Spacing mr={PADDING_UNITS} />
+            {editingBlockVariableUUIDs?.length >= 1 && (
+              <FlexContainer alignItems="center">
+                <Text bold large>
+                  Variables
+                </Text>
 
-              <Flex alignItems="center" flex={1}>
-                {editingBlockVariableUUIDs?.map((variableUUID: string, idx: number) => (
-                  <Spacing key={variableUUID} mr={1}>
-                    <Text default monospace>
-                      {variableUUID}{editingBlockVariableUUIDs?.length >= 2 && idx < editingBlockVariableUUIDs?.length - 1 && (
-                        <Text inline monospace muted>,</Text>
-                      )}
-                    </Text>
-                  </Spacing>
-                ))}
-              </Flex>
-            </FlexContainer>
+                <Spacing mr={PADDING_UNITS} />
+
+                <Flex alignItems="center" flex={1}>
+                  {editingBlockVariableUUIDs?.map((variableUUID: string, idx: number) => (
+                    <Spacing key={variableUUID} mr={1}>
+                      <Text default monospace>
+                        {variableUUID}{editingBlockVariableUUIDs?.length >= 2 && idx < editingBlockVariableUUIDs?.length - 1 && (
+                          <Text inline monospace muted>,</Text>
+                        )}
+                      </Text>
+                    </Spacing>
+                  ))}
+                </Flex>
+              </FlexContainer>
+            )}
           </Spacing>
         )}
 
@@ -838,7 +868,8 @@ function PipelineInteractions({
           <FlexContainer alignItems="center">
             <Button
               beforeIcon={<Save />}
-              loading={isLoadingUpdatePipelineInteraction}
+              disabled={isLoadingInteractions}
+              loading={isLoadingUpdatePipelineInteraction || isLoadingInteractions}
               onClick={() => savePipelineInteraction()}
               primary={touched}
               secondary={!touched}

@@ -1,35 +1,50 @@
 import asyncio
-import datetime
+import copy
 import json
 import os
 import shutil
-from typing import Any, Callable, Dict, List
+import tempfile
+import zipfile
+from datetime import datetime, timezone
+from io import BytesIO
+from typing import Any, Callable, Dict, List, Tuple, Union
 
 import aiofiles
 import pytz
 import yaml
 from jinja2 import Template
 
+from mage_ai.authentication.permissions.constants import EntityName
+from mage_ai.cache.pipeline import PipelineCache
 from mage_ai.data_preparation.models.block import Block, run_blocks, run_blocks_sync
 from mage_ai.data_preparation.models.block.data_integration.utils import (
     convert_outputs_to_data,
 )
-from mage_ai.data_preparation.models.block.errors import (
-    HasDownstreamDependencies,
-    NoMultipleDynamicUpstreamBlocks,
+from mage_ai.data_preparation.models.block.dynamic.utils import (
+    is_dynamic_block,
+    is_dynamic_block_child,
 )
-from mage_ai.data_preparation.models.block.utils import is_dynamic_block
+from mage_ai.data_preparation.models.block.errors import HasDownstreamDependencies
 from mage_ai.data_preparation.models.constants import (
     DATA_INTEGRATION_CATALOG_FILE,
     PIPELINE_CONFIG_FILE,
+    PIPELINE_MAX_FILE_SIZE,
     PIPELINES_FOLDER,
     BlockLanguage,
     BlockType,
     ExecutorType,
     PipelineType,
 )
-from mage_ai.data_preparation.models.errors import SerializationError
+from mage_ai.data_preparation.models.errors import (
+    FileWriteError,
+    InvalidPipelineZipError,
+    PipelineZipTooLargeError,
+    SerializationError,
+)
 from mage_ai.data_preparation.models.file import File
+from mage_ai.data_preparation.models.pipelines.models import PipelineSettings
+from mage_ai.data_preparation.models.project import Project
+from mage_ai.data_preparation.models.project.constants import FeatureUUID
 from mage_ai.data_preparation.models.utils import is_yaml_serializable
 from mage_ai.data_preparation.models.variable import Variable
 from mage_ai.data_preparation.repo_manager import (
@@ -45,10 +60,13 @@ from mage_ai.data_preparation.shared.utils import get_template_vars
 from mage_ai.data_preparation.templates.utils import copy_template_directory
 from mage_ai.data_preparation.variable_manager import VariableManager
 from mage_ai.orchestration.constants import Entity
+from mage_ai.settings.platform import build_repo_path_for_all_projects
+from mage_ai.settings.platform.constants import project_platform_activated
 from mage_ai.settings.repo import get_repo_path
 from mage_ai.shared.array import find
 from mage_ai.shared.hash import extract, ignore_keys, index_by, merge_dict
 from mage_ai.shared.io import safe_write, safe_write_async
+from mage_ai.shared.path_fixer import remove_base_repo_path
 from mage_ai.shared.strings import format_enum
 from mage_ai.shared.utils import clean_name
 
@@ -56,9 +74,19 @@ CYCLE_DETECTION_ERR_MESSAGE = 'A cycle was detected in this pipeline'
 
 
 class Pipeline:
-    def __init__(self, uuid, repo_path=None, config=None, repo_config=None, catalog=None):
+    def __init__(
+        self,
+        uuid,
+        repo_path=None,
+        config=None,
+        repo_config=None,
+        catalog=None,
+        use_repo_path: bool = False,
+    ):
         self.block_configs = []
         self.blocks_by_uuid = {}
+        # Can only be set True when run_pipeline_in_one_process is True
+        self.cache_block_output_in_memory = False
         self.concurrency_config = dict()
         self.created_at = None
         self.data_integration = None
@@ -72,22 +100,21 @@ class Pipeline:
         self.retry_config = {}
         self.run_pipeline_in_one_process = False
         self.schedules = []
+        self.settings = {}
         self.tags = []
         self.type = PipelineType.PYTHON
-        self.updated_at = datetime.datetime.now(tz=pytz.UTC)
+        self.use_repo_path = use_repo_path
         self.uuid = uuid
         self.widget_configs = []
         self._executor_count = 1  # Used by streaming pipeline to launch multiple executors
-        if config is None:
-            self.load_config_from_yaml()
-        else:
-            self.load_config(config, catalog=catalog)
+
         if repo_config is None:
             self.repo_config = get_repo_config(repo_path=self.repo_path)
         elif type(repo_config) is dict:
             self.repo_config = RepoConfig.from_dict(repo_config)
         else:
             self.repo_config = repo_config
+
         self.variable_manager = VariableManager.get_manager(
             self.repo_path,
             self.remote_variables_dir or self.variables_dir,
@@ -96,23 +123,51 @@ class Pipeline:
         # Used for showing the operation history. For example: recently viewed pipelines.
         self.history = []
 
-    @property
-    def config_path(self):
+        if config is None:
+            self.load_config_from_yaml()
+        else:
+            self.load_config(config, catalog=catalog)
+
+    @classmethod
+    def build_config_path(self, uuid: str, repo_path: str, use_repo_path: bool = False) -> str:
+        if project_platform_activated() and not use_repo_path:
+            from mage_ai.settings.platform.utils import get_pipeline_config_path
+
+            config_path, _repo_path = get_pipeline_config_path(uuid)
+            if config_path:
+                return config_path
+
         return os.path.join(
-            self.repo_path,
+            repo_path,
             PIPELINES_FOLDER,
-            self.uuid,
+            uuid,
             PIPELINE_CONFIG_FILE,
         )
 
     @property
+    def config_path(self):
+        return self.build_config_path(self.uuid, self.repo_path, use_repo_path=self.use_repo_path)
+
+    @property
     def catalog_config_path(self):
+        if project_platform_activated() and not self.use_repo_path:
+            from mage_ai.settings.platform.utils import get_pipeline_config_path
+
+            config_path, _repo_path = get_pipeline_config_path(self.uuid)
+            if config_path:
+                return os.path.join(os.path.dirname(config_path), DATA_INTEGRATION_CATALOG_FILE)
+
         return os.path.join(
             self.repo_path,
             PIPELINES_FOLDER,
             self.uuid,
             DATA_INTEGRATION_CATALOG_FILE,
         )
+
+    @property
+    def updated_at(self):
+        if os.path.exists(self.config_path):
+            return datetime.fromtimestamp(os.path.getmtime(self.config_path), tz=timezone.utc)
 
     @property
     def dir_path(self):
@@ -175,7 +230,7 @@ class Pipeline:
         # Update metadata.yaml with pipeline config
         with open(os.path.join(pipeline_path, PIPELINE_CONFIG_FILE), 'w') as fp:
             yaml.dump(dict(
-                created_at=str(datetime.datetime.now(tz=pytz.UTC)),
+                created_at=str(datetime.now(tz=pytz.UTC)),
                 name=name,
                 uuid=uuid,
                 type=format_enum(pipeline_type or PipelineType.PYTHON),
@@ -187,7 +242,54 @@ class Pipeline:
         return pipeline
 
     @classmethod
-    def duplicate(
+    def import_from_zip(self, zip_content: str, overwrite: bool = False) -> Tuple[File, Dict]:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            zip_data = BytesIO(zip_content)
+            with zipfile.ZipFile(zip_data, 'r') as zipf:
+                zip_size = sum(e.file_size for e in zipf.infolist())  # calc zip size in bytes
+                if zip_size / 1000 > PIPELINE_MAX_FILE_SIZE:  # prevention against zip-bombs
+                    raise PipelineZipTooLargeError(
+                        f'Pipeline zip exceeds size limit {PIPELINE_MAX_FILE_SIZE/1000}Kb')
+
+                # Ignore `__MACOSX` for zips created on macOS systems
+                zip_contents = [path for path in zipf.namelist() if not path.startswith('__MACOSX')]
+                # Verify if zip contents are part of a root folder
+                prefix = os.path.commonpath(zip_contents)
+
+                zipf.extractall(tmp_dir)
+                if prefix:
+                    inner_path = os.path.join(tmp_dir, prefix)
+                    all_files = os.listdir(inner_path)
+                    for file in all_files:  # move each file except the folder itself
+                        source_path = os.path.join(inner_path, file)
+                        destination_path = os.path.join(tmp_dir, file)
+                        os.rename(source_path, destination_path)
+                    os.removedirs(inner_path)  # remove root folder
+
+            pipeline_files, pipeline_config = self.__update_pipeline_yaml(
+                tmp_dir,
+                overwrite=overwrite,
+            )
+            new_pipeline_uuid = pipeline_config['uuid']
+
+            # write all files in bulk
+            for source, destination in pipeline_files:
+                try:
+                    dir_path, file_name = os.path.split(destination)
+                    with open(source, 'r') as src:
+                        File.create(file_name, dir_path, src.read(), overwrite=overwrite)
+                except Exception:
+                    raise FileWriteError(f'Failed to write pipeline file to {destination}.')
+
+            # return the pipeline configuration file
+            config_destination_path = pipeline_files[0][1]  # First item is the pipeline config path
+            ret_file = File.from_path(config_destination_path)
+            ret_file.filename = new_pipeline_uuid
+
+            return ret_file, pipeline_config
+
+    @classmethod
+    async def duplicate(
         cls,
         source_pipeline: 'Pipeline',
         duplicate_pipeline_name: str = None,
@@ -223,27 +325,65 @@ class Pipeline:
             yaml.dump(duplicate_pipeline_dict)
         )
 
+        tags = duplicate_pipeline_dict.get('tags')
+        blocks = duplicate_pipeline_dict.get('blocks')
+        if tags:
+            from mage_ai.cache.tag import TagCache
+
+            tag_cache = await TagCache.initialize_cache()
+            for tag_uuid in tags:
+                tag_cache.add_pipeline(tag_uuid, duplicate_pipeline)
+        if blocks:
+            from mage_ai.cache.block import BlockCache
+
+            block_cache = await BlockCache.initialize_cache()
+            for block in blocks:
+                block_cache.add_pipeline(block, duplicate_pipeline)
+
         return cls.get(
             duplicate_pipeline_uuid,
-            repo_path=duplicate_pipeline.repo_path
+            repo_path=duplicate_pipeline.repo_path,
         )
 
     @classmethod
-    def get(self, uuid, repo_path: str = None, check_if_exists: bool = False):
-        from mage_ai.data_preparation.models.pipelines.integration_pipeline import (
-            IntegrationPipeline,
-        )
-
-        if check_if_exists and not os.path.exists(
+    def exists(self, uuid, repo_path: str = None):
+        return os.path.exists(
             os.path.join(
                 repo_path or get_repo_path(),
                 PIPELINES_FOLDER,
                 uuid,
             ),
-        ):
+        )
+
+    @classmethod
+    def get(
+        self,
+        uuid,
+        repo_path: str = None,
+        check_if_exists: bool = False,
+        all_projects: bool = False,
+        use_repo_path: bool = False,
+    ):
+        from mage_ai.data_preparation.models.pipelines.integration_pipeline import (
+            IntegrationPipeline,
+        )
+
+        if all_projects and not use_repo_path and project_platform_activated():
+            from mage_ai.settings.platform.utils import get_pipeline_config_path
+
+            config_path, repo_path = get_pipeline_config_path(uuid)
+        else:
+            repo_path = repo_path or get_repo_path()
+            config_path = os.path.join(
+                repo_path,
+                PIPELINES_FOLDER,
+                uuid,
+            )
+
+        if check_if_exists and not os.path.exists(config_path):
             return None
 
-        pipeline = self(uuid, repo_path=repo_path)
+        pipeline = self(uuid, repo_path=repo_path, use_repo_path=use_repo_path)
         if PipelineType.INTEGRATION == pipeline.type:
             pipeline = IntegrationPipeline(uuid, repo_path=repo_path)
 
@@ -264,6 +404,7 @@ class Pipeline:
             raise_exception (bool, optional): Whether to raise Exception.
                 If raise_exception = False, return None as the config when exception happens.
         """
+        include_repo_path = repo_path is not None
         repo_path = repo_path or get_repo_path()
         config_path = os.path.join(
             repo_path,
@@ -284,20 +425,35 @@ class Pipeline:
                 raise e
             config = None
 
+        if include_repo_path and config:
+            config['repo_path'] = repo_path
+
         return config
 
     @classmethod
-    async def get_async(self, uuid, repo_path: str = None):
+    async def get_async(
+        self,
+        uuid,
+        repo_path: str = None,
+        all_projects: bool = False,
+        use_repo_path: bool = False,
+    ):
         from mage_ai.data_preparation.models.pipelines.integration_pipeline import (
             IntegrationPipeline,
         )
-        repo_path = repo_path or get_repo_path()
-        config_path = os.path.join(
-            repo_path,
-            PIPELINES_FOLDER,
-            uuid,
-            PIPELINE_CONFIG_FILE,
-        )
+
+        if all_projects and not use_repo_path and project_platform_activated():
+            from mage_ai.settings.platform.utils import get_pipeline_config_path
+
+            config_path, repo_path = get_pipeline_config_path(uuid)
+        else:
+            repo_path = repo_path or get_repo_path()
+            config_path = os.path.join(
+                repo_path,
+                PIPELINES_FOLDER,
+                uuid,
+                PIPELINE_CONFIG_FILE,
+            )
 
         if not os.path.exists(config_path):
             raise Exception(f'Pipeline {uuid} does not exist.')
@@ -325,21 +481,62 @@ class Pipeline:
                 catalog=catalog,
                 config=config,
                 repo_path=repo_path,
+                use_repo_path=use_repo_path,
             )
         else:
-            pipeline = self(uuid, repo_path=repo_path, config=config)
+            pipeline = self(uuid, repo_path=repo_path, config=config, use_repo_path=use_repo_path)
         return pipeline
 
     @classmethod
-    def get_all_pipelines(self, repo_path) -> List[str]:
-        pipelines_folder = os.path.join(repo_path, PIPELINES_FOLDER)
-        if not os.path.exists(pipelines_folder):
-            os.mkdir(pipelines_folder)
-        return [
-            d
-            for d in os.listdir(pipelines_folder)
-            if self.is_valid_pipeline(os.path.join(pipelines_folder, d))
-        ]
+    def get_all_pipelines_all_projects(
+        self,
+        *args,
+        **kwargs,
+    ) -> Union[List[str], List[Tuple[str, str]]]:
+        if project_platform_activated():
+            repo_paths = [d.get(
+                'full_path',
+            ) for d in build_repo_path_for_all_projects(mage_projects_only=True).values()]
+
+            return Pipeline.get_all_pipelines(
+                *args,
+                repo_paths=repo_paths,
+                **kwargs,
+            )
+        return Pipeline.get_all_pipelines(*args, **kwargs)
+
+    @classmethod
+    def get_all_pipelines(
+        self,
+        repo_path: str = None,
+        repo_paths: List[str] = None,
+        disable_pipelines_folder_creation: bool = False,
+        include_repo_path: bool = False,
+    ) -> Union[List[str], List[Tuple[str, str]]]:
+        arr = []
+
+        paths = []
+        if repo_path:
+            paths.append(repo_path)
+        if repo_paths:
+            paths.extend(repo_paths)
+
+        for path in paths:
+            pipelines_folder = os.path.join(path, PIPELINES_FOLDER)
+            pipelines_folder_exists = os.path.exists(pipelines_folder)
+            if not pipelines_folder_exists and not disable_pipelines_folder_creation:
+                if os.path.exists(os.path.dirname(pipelines_folder)):
+                    os.mkdir(pipelines_folder)
+                    pipelines_folder_exists = True
+
+            if pipelines_folder_exists:
+                arr.extend([
+                    (d, path) if include_repo_path else d
+                    for d in os.listdir(pipelines_folder)
+                    if self.is_valid_pipeline(os.path.join(pipelines_folder, d))
+                ])
+
+        return arr
 
     @classmethod
     def get_pipelines_by_block(self, block, repo_path=None, widget=False) -> List['Pipeline']:
@@ -421,6 +618,7 @@ class Pipeline:
         global_vars=None,
         run_sensors: bool = True,
         run_tests: bool = True,
+        update_status: bool = True,
     ) -> None:
         """
         Function for synchronous block processing.
@@ -454,11 +652,12 @@ class Pipeline:
                 global_vars=global_vars,
                 run_sensors=run_sensors,
                 run_tests=run_tests,
+                update_status=update_status,
             )
 
     def get_config_from_yaml(self):
         if not os.path.exists(self.config_path):
-            raise Exception(f'Pipeline {self.uuid} does not exist.')
+            raise Exception(f'Pipeline {self.uuid} does not exist in repo_path {self.repo_path}.')
         with open(self.config_path) as fp:
             config = yaml.full_load(fp) or {}
         return config
@@ -490,10 +689,10 @@ class Pipeline:
         except Exception:
             pass
         self.created_at = config.get('created_at')
-        self.updated_at = config.get('updated_at')
         self.type = config.get('type') or self.type
 
         self.block_configs = config.get('blocks') or []
+        self.cache_block_output_in_memory = config.get('cache_block_output_in_memory', False)
         self.callback_configs = config.get('callbacks') or []
         self.concurrency_config = config.get('concurrency_config') or dict()
         self.conditional_configs = config.get('conditionals') or []
@@ -502,6 +701,7 @@ class Pipeline:
         self.notification_config = config.get('notification_config') or {}
         self.retry_config = config.get('retry_config') or {}
         self.run_pipeline_in_one_process = config.get('run_pipeline_in_one_process', False)
+        self.settings = PipelineSettings.load(**config.get('settings') or {})
         self.spark_config = config.get('spark_config') or {}
         self.tags = config.get('tags') or []
         self.widget_configs = config.get('widgets') or []
@@ -510,6 +710,12 @@ class Pipeline:
 
         def build_shared_args_kwargs(c):
             block_type = c.get('type')
+
+            if block_type not in [b.value for b in BlockType]:
+                raise Exception(
+                    f'Error loading pipeline ({self.uuid}): Invalid block type ({block_type})',
+                )
+
             language = c.get('language')
             return Block.block_class_from_type(block_type, language=language, pipeline=self)(
                 c.get('name'),
@@ -525,6 +731,7 @@ class Pipeline:
                 language=c.get('language'),
                 pipeline=self,
                 replicated_block=c.get('replicated_block'),
+                repo_config=self.repo_config,
                 retry_config=c.get('retry_config'),
                 status=c.get('status'),
                 timeout=c.get('timeout'),
@@ -615,6 +822,7 @@ class Pipeline:
 
     def to_dict_base(self, exclude_data_integration=False) -> Dict:
         base = dict(
+            cache_block_output_in_memory=self.cache_block_output_in_memory,
             concurrency_config=self.concurrency_config,
             created_at=self.created_at,
             data_integration=self.data_integration if not exclude_data_integration else None,
@@ -624,12 +832,14 @@ class Pipeline:
             executor_type=self.executor_type,
             name=self.name,
             notification_config=self.notification_config,
+            remote_variables_dir=self.remote_variables_dir,
             retry_config=self.retry_config,
             run_pipeline_in_one_process=self.run_pipeline_in_one_process,
+            settings=self.settings.to_dict() if self.settings else self.settings,
             tags=self.tags,
             type=self.type.value if type(self.type) is not str else self.type,
-            updated_at=self.updated_at,
             uuid=self.uuid,
+            variables_dir=self.variables_dir,
         )
 
         if self.variables is not None:
@@ -645,6 +855,7 @@ class Pipeline:
         include_content: bool = False,
         include_extensions: bool = False,
         include_outputs: bool = False,
+        include_outputs_spark: bool = False,
         sample_count: int = None,
         exclude_data_integration: bool = False,
     ) -> Dict:
@@ -676,6 +887,7 @@ class Pipeline:
                         b.to_dict(
                             include_content=include_content,
                             include_outputs=include_outputs,
+                            include_outputs_spark=include_outputs_spark,
                             sample_count=sample_count,
                           ) for b in extension['blocks_by_uuid'].values()
                     ]
@@ -706,6 +918,7 @@ class Pipeline:
         include_content: bool = False,
         include_extensions: bool = False,
         include_outputs: bool = False,
+        include_outputs_spark: bool = False,
         sample_count: int = None,
     ):
         shared_kwargs = dict(
@@ -722,6 +935,7 @@ class Pipeline:
             *[b.to_dict_async(**merge_dict(shared_kwargs, dict(
                 include_block_catalog=include_block_catalog,
                 include_block_pipelines=include_block_pipelines,
+                include_outputs_spark=include_outputs_spark,
             ))) for b in self.blocks_by_uuid.values()]
         )
         callbacks_data = await asyncio.gather(
@@ -775,6 +989,8 @@ class Pipeline:
         )
 
         old_uuid = None
+        blocks_to_remove_from_cache = []
+        block_uuids_to_add_to_cache = []
         should_update_block_cache = False
         should_update_tag_cache = False
 
@@ -807,6 +1023,9 @@ class Pipeline:
             should_update_block_cache = True
             should_update_tag_cache = True
 
+            cache = PipelineCache()
+            cache.move_model(dict(uuid=new_uuid), dict(uuid=old_uuid))
+
         should_save = False
 
         if 'extensions' in data:
@@ -831,7 +1050,6 @@ class Pipeline:
         for key in [
             'description',
             'type',
-            'updated_at',
         ]:
             if key in data and data.get(key) != getattr(self, key):
                 setattr(self, key, data.get(key))
@@ -839,6 +1057,7 @@ class Pipeline:
                 should_update_block_cache = True
 
         for key in [
+            'cache_block_output_in_memory',
             'data_integration',
             'executor_type',
             'retry_config',
@@ -847,6 +1066,10 @@ class Pipeline:
             if key in data:
                 setattr(self, key, data.get(key))
                 should_save = True
+
+        if 'settings' in data:
+            self.settings = PipelineSettings.load(**(data.get('settings') or {}))
+            should_save = True
 
         blocks = data.get('blocks', [])
 
@@ -884,10 +1107,20 @@ class Pipeline:
                             self.extensions.get(extension_uuid, {}).get('blocks_by_uuid', {}),
                         ))
 
+            global_hooks = None
+            if len(arr) >= 1:
+                if Project.is_feature_enabled_in_root_or_active_project(FeatureUUID.GLOBAL_HOOKS):
+                    from mage_ai.data_preparation.models.global_hooks.models import (
+                        GlobalHooks,
+                    )
+
+                    global_hooks = GlobalHooks.load_from_file()
+
             for tup in arr:
                 key, blocks_arr, mapping = tup
                 widget = key == 'widgets'
                 should_save_async = False
+                cache_block_action_object = None
 
                 for block_data in blocks_arr:
                     if 'uuid' not in block_data:
@@ -896,14 +1129,47 @@ class Pipeline:
                     block = mapping.get(block_data['uuid'])
                     if block is None:
                         continue
+
+                    if global_hooks:
+                        from mage_ai.data_preparation.models.global_hooks.models import (
+                            HookOperation,
+                            HookStage,
+                        )
+
+                        hooks = global_hooks.get_and_run_hooks(
+                            operation_resource=block,
+                            operation_types=[HookOperation.UPDATE_ANYWHERE],
+                            resource_type=EntityName.Block,
+                            stage=HookStage.BEFORE,
+                            payload=block_data,
+                        )
+
+                        if hooks:
+                            for hook in (hooks or []):
+                                output = hook.output
+                                if not output:
+                                    continue
+
+                                if output.get('payload'):
+                                    value = output.get('payload') or {}
+                                    if isinstance(value, dict):
+                                        block_data = merge_dict(block_data, value)
+
                     if 'content' in block_data:
                         from mage_ai.cache.block_action_object import (
                             BlockActionObjectCache,
                         )
 
-                        cache_block_action_object = await BlockActionObjectCache.initialize_cache()
-                        await block.update_content_async(block_data['content'], widget=widget)
-                        cache_block_action_object.update_block(block)
+                        old_block_content = await block.content_async()
+                        if block_data['content'] != old_block_content:
+                            if cache_block_action_object is None:
+                                cache_block_action_object = \
+                                    await BlockActionObjectCache.initialize_cache()
+
+                            await block.update_content_async(block_data['content'], widget=widget)
+
+                            cache_block_action_object.update_block(block)
+
                     if 'callback_content' in block_data \
                             and block.callback_block:
                         await block.callback_block.update_content_async(
@@ -911,10 +1177,11 @@ class Pipeline:
                             widget=widget,
                         )
                     if 'outputs' in block_data:
-                        await block.save_outputs_async(
-                            block_data['outputs'],
-                            override=True,
-                        )
+                        if not is_dynamic_block(block) and not is_dynamic_block_child(block):
+                            await block.save_outputs_async(
+                                block_data['outputs'],
+                                override=True,
+                            )
 
                     name = block_data.get('name')
 
@@ -927,22 +1194,6 @@ class Pipeline:
 
                     configuration = block_data.get('configuration')
                     if configuration:
-                        if configuration.get('dynamic') and not is_dynamic_block(block):
-                            for downstream_block in block.downstream_blocks:
-                                dynamic_blocks = list(filter(
-                                    is_dynamic_block,
-                                    downstream_block.upstream_blocks,
-                                ))
-
-                                if len(dynamic_blocks) >= 1:
-                                    db_uuids = [block.uuid] + [b.uuid for b in dynamic_blocks]
-                                    raise NoMultipleDynamicUpstreamBlocks(
-                                        f'Block {downstream_block.uuid} can only have 1 '
-                                        'upstream block that is dynamic. Current request is '
-                                        'trying to set the following dynamic blocks as '
-                                        f"upstream: {', '.join(db_uuids)}.",
-                                    )
-
                         block.configuration = configuration
                         should_save_async = should_save_async or True
 
@@ -968,14 +1219,29 @@ class Pipeline:
                             BlockActionObjectCache,
                         )
 
-                        cache_block_action_object = await BlockActionObjectCache.initialize_cache()
+                        if cache_block_action_object is None:
+                            cache_block_action_object = \
+                                await BlockActionObjectCache.initialize_cache()
                         cache_block_action_object.update_block(block, remove=True)
+
+                        block_update_payload = extract(block_data, ['name'])
+                        configuration = copy.deepcopy(block_data).get('configuration', {})
+                        file_path = (configuration.get('file_source') or {}).get('path')
+                        if file_path:
+                            # Check for block name with period to avoid replacing a directory name
+                            new_file_path = file_path.replace(f'{block.name}.', f'{name}.')
+                            configuration['file_source']['path'] = new_file_path
+                            block_update_payload['configuration'] = configuration
+                        blocks_to_remove_from_cache.append(block.to_dict())
                         block.update(
-                            extract(block_data, ['name']),
+                            block_update_payload,
                             detach=block_data.get('detach', False)
                         )
+
+                        block_uuids_to_add_to_cache.append(block.uuid)
                         cache_block_action_object.update_block(block)
                         block_uuid_mapping[block_data.get('uuid')] = block.uuid
+                        should_update_block_cache = True
                         should_save_async = should_save_async or True
 
                 if should_save_async:
@@ -1006,10 +1272,24 @@ class Pipeline:
 
             cache = await BlockCache.initialize_cache()
 
+            for block_dict in blocks_to_remove_from_cache:
+                cache.remove_pipeline(
+                    block_dict,
+                    self.uuid,
+                    self.repo_path,
+                )
+
             for block in self.blocks_by_uuid.values():
+                if block_uuids_to_add_to_cache and block.uuid not in block_uuids_to_add_to_cache:
+                    continue
+
                 if old_uuid:
-                    cache.remove_pipeline(block, old_uuid)
-                cache.update_pipeline(block, self)
+                    cache.remove_pipeline(
+                        block.to_dict(),
+                        old_uuid,
+                        self.repo_path,
+                    )
+                cache.update_pipeline(block.to_dict(), self)
 
         if should_update_tag_cache:
             from mage_ai.cache.tag import TagCache
@@ -1018,8 +1298,155 @@ class Pipeline:
 
             for tag_uuid in self.tags:
                 if old_uuid:
-                    cache.remove_pipeline(tag_uuid, old_uuid)
+                    cache.remove_pipeline(tag_uuid, old_uuid, self.repo_path)
                 cache.add_pipeline(tag_uuid, self)
+
+    @classmethod
+    def __find_pipeline_file(
+        self,
+        root_dir: str,
+        file_name: str,
+        sub_folder: str = None,
+    ) -> str:
+        """
+        Searches for a file with a specified name in the provided directory and its subdirectories.
+        Used in the pipeline import process for looking up files in the pipeline zip.
+
+        Args:
+            root_dir (str): The root directory where the search takes place.
+            file_name (str): Name of the file to search for.
+            sub_folder (str, optional): Folder parameter used for situations where
+                the file is enclosed in a child folder,
+                e.g., "pipelines/[pipeline_name]/metadata.yaml",
+                where `pipelines` is the sub_folder.
+
+        Returns:
+            str or None: Path of the found file, or None if not found.
+
+        Examples:
+            >>> __find_pipeline_file('path/to/dir', 'file.txt')
+            'path/to/dir/file.txt'
+
+            >>> __find_pipeline_file('path/to/dir', 'metadata.yaml', 'pipelines')
+            'path/to/dir/pipelines/[pipeline_name]/metadata.yaml'
+        """
+        file_path = os.path.join(root_dir, file_name)
+
+        if not os.path.exists(file_path) and sub_folder:
+            walk_start = os.path.join(root_dir, sub_folder)
+            file_gen = (os.path.join(root, file_name) for root, _, _ in os.walk(walk_start))
+            file_path = next(
+                (potential_path for potential_path in file_gen if os.path.exists(potential_path)),
+                None,
+            )
+        return file_path
+
+    @classmethod
+    def __update_pipeline_yaml(
+        self, tmp_dir: str, overwrite: bool = False
+    ) -> Tuple[List[str], Dict]:
+        """
+        Updates the pipeline config yaml during the import process.
+        Modifies pipeline and block names in case of name conflict.
+        Updates each block`s upstream and downstream references.
+        Compiles list of files to be writen in bulk at the end of the import process.
+
+        Args:
+            tmp_dir (str): the temporary directory in which the pipeline files reside
+            overwrite (bool): whether to overwrite any existing pipelines with the same uuid
+
+        Returns:
+            tuple:
+                - files_to_be_written: a list of tuples containing the source and destination paths
+                    for each resource needed to be writen at the end of the import process
+                - config (dict): the pipeline config fetched from the zip file
+        """
+        config_zip_path = self.__find_pipeline_file(
+            tmp_dir, PIPELINE_CONFIG_FILE, PIPELINES_FOLDER
+        )
+        if config_zip_path is None or not os.path.exists(config_zip_path):
+            raise InvalidPipelineZipError
+
+        files_to_be_written = []
+        with open(config_zip_path, 'r') as pipeline_config:
+
+            config = yaml.safe_load(pipeline_config)
+
+            # check if pipeline exists with same uuid and generate new one if necessary
+            if not overwrite:
+                uuid = config['uuid']
+                index = 0
+                while self.exists(uuid):
+                    index += 1
+                    uuid = f'{config["uuid"]}_{index}'
+                config['uuid'] = uuid
+                config['name'] = uuid
+
+            pipe_f_path = os.path.join(get_repo_path(), PIPELINES_FOLDER, config['uuid'])
+            config_destination_path = os.path.join(pipe_f_path, PIPELINE_CONFIG_FILE)
+            files_to_be_written.append((config_zip_path, config_destination_path))
+
+            # retain block upstream and downstream references
+            block_hierarchy = {
+                block['uuid']: {key: [] for key in ['upstream_blocks', 'downstream_blocks']}
+                for block in config['blocks']
+            }
+
+            for b_index, block in enumerate(config['blocks']):
+                name = block['name']
+                uuid = block['uuid']
+                block_type = block['type']
+                language = block.get('language', 'python')
+                configuration = block.get('configuration', {})
+
+                block_inst = Block(name=name, uuid=uuid, block_type=block_type, language=language)
+
+                # check if block exists with same uuid and generate new one if necessary
+                if not overwrite:
+                    index = 0
+                    while block_inst.exists():
+                        index += 1
+                        block_inst.uuid = f'{block["uuid"]}_{index}'
+
+                # save block
+                block_destination_path = block_inst.file_path
+                _, file_extension = os.path.splitext(block_destination_path)
+                block_directory = os.path.basename(os.path.dirname(block_destination_path))
+                block_zip_path = self.__find_pipeline_file(
+                    tmp_dir, f'{uuid}{file_extension}', block_directory
+                )
+
+                if block_zip_path is None or not os.path.exists(block_zip_path):
+                    raise InvalidPipelineZipError(f'Block {uuid} missing from zip file.')
+
+                files_to_be_written.append((block_zip_path, block_destination_path))
+
+                # save new block parameters
+                file_path = (configuration.get('file_source') or {}).get('path')
+                if file_path:
+                    file_path = remove_base_repo_path(block_destination_path)
+                    block['configuration']['file_source']['path'] = file_path
+                block['uuid'] = block_inst.uuid
+                block['name'] = block_inst.uuid
+                config['blocks'][b_index] = block
+
+                # modify upstream and downstream referencesd
+                for upstr_name in block['upstream_blocks']:
+                    block_hierarchy[upstr_name]['downstream_blocks'].append(block['uuid'])
+                for downstr_name in block['downstream_blocks']:
+                    block_hierarchy[downstr_name]['upstream_blocks'].append(block['uuid'])
+
+            # save upstream and downstream references
+            hierarchy_list = list(block_hierarchy.values())
+            for b_index, block in enumerate(config['blocks']):
+                block['upstream_blocks'] = hierarchy_list[b_index]['upstream_blocks']
+                block['downstream_blocks'] = hierarchy_list[b_index]['downstream_blocks']
+
+        # dump new config information back in temp folder
+        with open(config_zip_path, 'w', encoding='utf-8') as pipeline_config:
+            yaml.dump(config, pipeline_config)
+
+        return files_to_be_written, config
 
     def __update_block_order(self, blocks: List[Dict]) -> bool:
         uuids_new = [b['uuid'] for b in blocks if b]
@@ -1092,6 +1519,7 @@ class Pipeline:
         self,
         block: Block,
         upstream_block_uuids: List[str] = None,
+        downstream_block_uuids: List[str] = None,
         priority: int = None,
         widget: bool = False,
     ) -> Block:
@@ -1146,6 +1574,19 @@ class Pipeline:
                 priority=priority,
             )
 
+        if downstream_block_uuids:
+            for downstream_block_uuid in downstream_block_uuids:
+                downstream_block = self.get_block(downstream_block_uuid)
+                if not downstream_block:
+                    continue
+
+                self.update_block(
+                    downstream_block,
+                    upstream_block_uuids=(
+                        downstream_block.upstream_block_uuids or []
+                    ) + [block.uuid],
+                )
+
         self.validate('A cycle was formed while adding a block')
         self.save()
         return block
@@ -1180,6 +1621,13 @@ class Pipeline:
             # [block_uuid]:[replicated_block_uuid]
             block = mapping.get(block_uuid.split(':')[0])
 
+        if not block:
+            print(
+                f'[ERROR] Pipeline.get_block: '
+                f'block {block_uuid} with type {block_type} does not exist in '
+                f'pipeline {self.uuid} for repo_path {self.repo_path}.'
+            )
+
         return block
 
     def get_block_variable(
@@ -1194,6 +1642,8 @@ class Pipeline:
         spark=None,
         index: int = None,
         sample_count: int = None,
+        dynamic_block_index: int = None,
+        dynamic_block_uuid: str = None,
     ):
         block = self.get_block(block_uuid)
 
@@ -1222,6 +1672,8 @@ class Pipeline:
             raise_exception=raise_exception,
             spark=spark,
             variable_uuid=variable_name,
+            dynamic_block_index=dynamic_block_index,
+            dynamic_block_uuid=dynamic_block_uuid,
         )
 
         return variable
@@ -1257,6 +1709,7 @@ class Pipeline:
         callback_block_uuids: List[str] = None,
         check_upstream_block_order: bool = False,
         conditional_block_uuids: List[str] = None,
+        downstream_block_uuids: List[str] = None,
         upstream_block_uuids: List[str] = None,
         widget: bool = False,
     ):
@@ -1268,32 +1721,6 @@ class Pipeline:
         is_extension = BlockType.EXTENSION == block.type
 
         if upstream_block_uuids is not None:
-            mapping = {}
-            if widget:
-                mapping = self.widgets_by_uuid
-            elif is_extension and extension_uuid:
-                if extension_uuid not in self.extensions:
-                    self.extensions[extension_uuid] = {}
-                mapping = self.extensions[extension_uuid].get('blocks_by_uuid', {})
-            elif is_callback:
-                mapping = self.callbacks_by_uuid
-            elif is_conditional:
-                mapping = self.conditionals_by_uuid
-            else:
-                mapping = self.blocks_by_uuid
-
-            dynamic_upstream_blocks = list(filter(
-                is_dynamic_block,
-                [mapping[b_uuid] for b_uuid in upstream_block_uuids if b_uuid in mapping],
-            ))
-
-            if len(dynamic_upstream_blocks) >= 2:
-                raise NoMultipleDynamicUpstreamBlocks(
-                    f'Block {block.uuid} can only have 1 upstream block that is dynamic. '
-                    'Current request is trying to set the following dynamic blocks as upstream: '
-                    f"{', '.join([b.uuid for b in dynamic_upstream_blocks])}.",
-                )
-
             curr_upstream_block_uuids = set(block.upstream_block_uuids)
             new_upstream_block_uuids = set(upstream_block_uuids)
             if curr_upstream_block_uuids != new_upstream_block_uuids or \
@@ -1356,6 +1783,35 @@ class Pipeline:
             # The normal block will know about the conditional block via the
             # conditional_blocks field.
             block.update_conditional_blocks(conditional_blocks)
+        elif downstream_block_uuids is not None:
+            block_uuids_to_remove = \
+                [uuid for uuid in block.downstream_block_uuids
+                    if uuid not in downstream_block_uuids]
+
+            for block_uuid in block_uuids_to_remove:
+                block_inner = self.get_block(block_uuid)
+                if not block_inner:
+                    continue
+                block_inner.update(
+                    dict(
+                        upstream_blocks=list(filter(
+                            lambda x, uuid=block.uuid: x != uuid,
+                            block_inner.upstream_block_uuids or [],
+                        )),
+                    ),
+                    check_upstream_block_order=check_upstream_block_order,
+                )
+
+            for block_uuid in downstream_block_uuids:
+                block_inner = self.get_block(block_uuid)
+                if not block_inner:
+                    continue
+                block_inner.update(
+                    dict(
+                        upstream_blocks=(block_inner.upstream_block_uuids or []) + [block.uuid],
+                    ),
+                    check_upstream_block_order=check_upstream_block_order,
+                )
         else:
             save_kwargs['block_uuid'] = block.uuid
 
@@ -1465,7 +1921,9 @@ class Pipeline:
             if block.type == BlockType.SCRATCHPAD:
                 self.delete_block(block)
                 os.remove(block.file_path)
-        shutil.rmtree(self.dir_path)
+
+        if os.path.exists(self.dir_path):
+            shutil.rmtree(self.dir_path)
 
         # Delete secret directory when deleting pipeline
         try:
@@ -1619,6 +2077,22 @@ class Pipeline:
             file_version_only=True,
         )
 
+    def should_save_trigger_in_code_automatically(self) -> bool:
+        from mage_ai.data_preparation.models.project import Project
+
+        if self.settings and \
+                self.settings.triggers and \
+                self.settings.triggers.save_in_code_automatically is not None:
+
+            return self.settings.triggers.save_in_code_automatically
+
+        project = Project(self.repo_config)
+
+        return project.pipelines and \
+            project.pipelines.settings and \
+            project.pipelines.settings.triggers and \
+            project.pipelines.settings.triggers.save_in_code_automatically
+
     async def save_async(
         self,
         block_type: str = None,
@@ -1667,12 +2141,12 @@ class Pipeline:
         content = yaml.dump(pipeline_dict)
 
         test_path = f'{self.config_path}.test'
-        async with aiofiles.open(test_path, mode='w') as fp:
+        async with aiofiles.open(test_path, mode='w', encoding='utf-8') as fp:
             await fp.write(content)
 
         if os.path.isfile(test_path):
             success = True
-            with open(test_path, mode='r') as fp:
+            with open(test_path, mode='r', encoding='utf-8') as fp:
                 try:
                     yaml.full_load(fp)
                 except yaml.scanner.ScannerError:

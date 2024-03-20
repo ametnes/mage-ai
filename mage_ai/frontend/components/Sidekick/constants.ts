@@ -1,4 +1,4 @@
-import PipelineType from '@interfaces/PipelineType';
+import PipelineType, { PipelineTypeEnum } from '@interfaces/PipelineType';
 import ProjectType, { FeatureUUIDEnum } from '@interfaces/ProjectType';
 import {
   Callback,
@@ -27,6 +27,7 @@ export enum ViewKeyEnum {
   CHARTS = 'charts',
   DATA = 'data',
   EXTENSIONS = 'power_ups',
+  FILES = 'files',
   FILE_VERSIONS = 'file_versions',
   GRAPHS = 'graphs',
   INTERACTIONS = 'interactions',
@@ -52,6 +53,7 @@ export const MESSAGE_VIEWS = [
 ];
 
 export function SIDEKICK_VIEWS(opts?: {
+  pipeline?: PipelineType;
   project?: ProjectType;
 }): {
   buildLabel?: (opts: {
@@ -121,30 +123,38 @@ export function SIDEKICK_VIEWS(opts?: {
       },
       key: ViewKeyEnum.SECRETS,
     },
-    {
-      buildLabel: ({
-        pipeline,
-      }) => 'Add-on blocks',
-      key: ViewKeyEnum.ADDON_BLOCKS,
-    },
-    {
-      buildLabel: ({
-        pipeline,
-      }) => {
-        const { extensions = {} } = pipeline || {};
-        let extensionsCount = 0;
-        Object.values(extensions).forEach(({ blocks }) => {
-          extensionsCount += blocks?.length || 0;
-        });
+  ];
 
-        if (extensionsCount >= 1) {
-          return `Power ups (${extensionsCount})`;
-        }
-
-        return 'Power ups';
+  if (PipelineTypeEnum.PYSPARK !== opts?.pipeline?.type) {
+    arr.push(...[
+      {
+        buildLabel: ({
+          pipeline,
+        }) => 'Add-on blocks',
+        key: ViewKeyEnum.ADDON_BLOCKS,
       },
-      key: ViewKeyEnum.EXTENSIONS,
-    },
+      {
+        buildLabel: ({
+          pipeline,
+        }) => {
+          const { extensions = {} } = pipeline || {};
+          let extensionsCount = 0;
+          Object.values(extensions).forEach(({ blocks }) => {
+            extensionsCount += blocks?.length || 0;
+          });
+
+          if (extensionsCount >= 1) {
+            return `Power ups (${extensionsCount})`;
+          }
+
+          return 'Power ups';
+        },
+        key: ViewKeyEnum.EXTENSIONS,
+      },
+    ]);
+  }
+
+  arr.push(...[
     {
       key: ViewKeyEnum.DATA,
       label: 'Data',
@@ -157,7 +167,7 @@ export function SIDEKICK_VIEWS(opts?: {
       key: ViewKeyEnum.BLOCK_SETTINGS,
       label: 'Block settings',
     },
-  ];
+  ]);
 
   if (opts?.project?.features?.[FeatureUUIDEnum.INTERACTIONS]) {
     arr.push({
@@ -170,6 +180,7 @@ export function SIDEKICK_VIEWS(opts?: {
 }
 
 export function SIDEKICK_VIEWS_BY_KEY(opts?: {
+  pipeline?: PipelineType;
   project?: ProjectType;
 }) {
   return indexBy(SIDEKICK_VIEWS(opts), ({ key }) => key)

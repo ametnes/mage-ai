@@ -158,8 +158,15 @@ class User(BaseModel):
 
     @property
     def git_settings(self) -> Union[Dict, None]:
+        return self.get_git_settings()
+
+    def get_git_settings(self, repo_path: str = None):
         preferences = self.preferences or dict()
-        return preferences.get(get_repo_path(), {}).get('git_settings')
+        if not repo_path:
+            repo_path = get_repo_path()
+        pref = preferences.get(repo_path)
+        if pref:
+            return (pref or {}).get('git_settings')
 
     @classmethod
     @safe_db_query
@@ -876,6 +883,7 @@ class Oauth2AccessToken(BaseModel):
     token = Column(String(255), index=True, unique=True)
     user = relationship(User, back_populates='oauth2_access_tokens')
     user_id = Column(Integer, ForeignKey('user.id'))
+    refresh_token = Column(String(255))
 
     def is_valid(self) -> bool:
         return self.token and \

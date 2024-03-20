@@ -14,6 +14,9 @@ export enum PipelineTypeEnum {
   STREAMING = 'streaming',
 }
 
+// Invalid pipeline type used for pipelines with invalid configuration
+export const PIPELINE_TYPE_INVALID = 'invalid';
+
 export const PIPELINE_TYPE_DISPLAY_NAME = {
   [PipelineTypeEnum.INTEGRATION]: 'Integration',
   [PipelineTypeEnum.PYTHON]: 'Python',
@@ -59,6 +62,8 @@ export enum PipelineStatusEnum {
 export enum PipelineQueryEnum {
   GROUP = 'group_by',
   HISTORY_DAYS = 'from_history_days',
+  NO_TAGS = 'no_tags',
+  SEARCH = 'search',
   STATUS = 'status[]',
   TAG = 'tag[]',
   TYPE = 'type[]',
@@ -100,6 +105,14 @@ export interface PipelineRetryConfigType {
   retries?: number;
 }
 
+interface PipelineSettingsTriggersType {
+  save_in_code_automatically?: boolean;
+}
+
+export interface PipelineSettingsType {
+  triggers?: PipelineSettingsTriggersType;
+}
+
 export default interface PipelineType {
   actions?: TransformerActionType[];
   blocks?: BlockType[];
@@ -115,12 +128,15 @@ export default interface PipelineType {
   id?: number;
   metadata?: PipelineMetadataType;
   name?: string;
+  pipeline_schedule_id?: string;
   retry_config?: PipelineRetryConfigType;
   run_pipeline_in_one_process?: boolean;
   schedules?: PipelineScheduleType[];
+  settings?: PipelineSettingsType;
   tags?: string[];
   type?: PipelineTypeEnum;
   updated_at?: string;
   uuid: string;
+  variables?: { [keyof: string]: string };
   widgets?: BlockType[];
 }

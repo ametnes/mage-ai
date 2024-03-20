@@ -4,12 +4,16 @@ from mage_ai.api.errors import ApiError
 from mage_ai.api.resources.BaseResource import BaseResource
 from mage_ai.authentication.ldap import new_ldap_connection
 from mage_ai.authentication.oauth2 import encode_token, generate_access_token
-from mage_ai.authentication.oauth.active_directory import get_user_info
-from mage_ai.authentication.oauth.constants import OAUTH_PROVIDER_ACTIVE_DIRECTORY
 from mage_ai.authentication.passwords import verify_password
+from mage_ai.authentication.providers.constants import NAME_TO_PROVIDER
 from mage_ai.orchestration.db import safe_db_query
 from mage_ai.orchestration.db.models.oauth import Role, User
-from mage_ai.settings import AUTHENTICATION_MODE, LDAP_DEFAULT_ACCESS
+from mage_ai.settings import (
+    AUTHENTICATION_MODE,
+    OAUTH_DEFAULT_ACCESS,
+    get_settings_value,
+)
+from mage_ai.settings.keys import LDAP_DEFAULT_ACCESS
 from mage_ai.usage_statistics.logger import UsageStatisticLogger
 
 
@@ -23,18 +27,37 @@ class SessionResource(BaseResource):
         token = payload.get('token')
         provider = payload.get('provider')
 
+        oauth_client = kwargs.get('oauth_client')
+
+        # Oauth sign in
         if token and provider:
-            if provider == OAUTH_PROVIDER_ACTIVE_DIRECTORY:
-                user_info = get_user_info(token)
-                principal_name = user_info.get('userPrincipalName')
-                user = User.query.filter(User.email == principal_name).first()
+            roles = []
+            provider_class = NAME_TO_PROVIDER.get(provider)
+            if provider_class is not None:
+                provider_instance = provider_class()
+                user_info = await provider_instance.get_user_info(access_token=token)
+                email = user_info.get('email')
+                username = user_info.get('username')
+                if 'user_roles' in user_info:
+                    user_roles = user_info.get('user_roles')
+                    roles = Role.query.filter(Role.name.in_(user_roles)).all()
+
+            if not email:
+                error = ApiError.RESOURCE_NOT_FOUND
+                error.update({'message': 'Could not get email from oauth provider.'})
+                raise ApiError(error)
+            else:
+                user = User.query.filter(User.email == email).first()
                 if not user:  # noqa: E712
                     print('first user login, creating user.')
+                    if not roles and OAUTH_DEFAULT_ACCESS:
+                        roles = Role.query.filter(Role.name == OAUTH_DEFAULT_ACCESS).all()
                     user = User.create(
-                        username=principal_name,
-                        email=principal_name,
+                        username=username,
+                        email=email,
+                        roles_new=roles,
                     )
-                oauth_token = generate_access_token(user, kwargs['oauth_client'])
+                oauth_token = generate_access_token(user, oauth_client)
                 return self(oauth_token, user, **kwargs)
 
         error = ApiError.RESOURCE_NOT_FOUND
@@ -56,8 +79,10 @@ class SessionResource(BaseResource):
             conn = new_ldap_connection()
             auth, user_dn, user_attributes = conn.authenticate(email, password)
             if not auth:
-                if user_dn != "":
-                    error.update({'message': 'wrong password.'})
+                if not user_dn:
+                    error.update({'message': 'LDAP user not found.'})
+                else:
+                    error.update({'message': 'LDAP password invalid.'})
                 raise ApiError(error)
 
             authz = conn.authorize(user_dn)
@@ -73,10 +98,11 @@ class SessionResource(BaseResource):
                 role_names = conn.get_user_roles(user_attributes)
                 if role_names:
                     roles = Role.query.filter(Role.name.in_(role_names)).all()
+                ldap_default_access = get_settings_value(LDAP_DEFAULT_ACCESS)
                 if not roles and \
-                        LDAP_DEFAULT_ACCESS is not None and \
-                        LDAP_DEFAULT_ACCESS in [r for r in Role.DefaultRole]:
-                    default_role = Role.get_role(LDAP_DEFAULT_ACCESS)
+                        ldap_default_access is not None and \
+                        ldap_default_access in [r for r in Role.DefaultRole]:
+                    default_role = Role.get_role(ldap_default_access)
                     if default_role:
                         roles.append(default_role)
                 user = User.create(

@@ -8,6 +8,7 @@ import { useMutation } from 'react-query';
 import { useRouter } from 'next/router';
 
 import BackfillType, {
+  BackfillSettingsType,
   BACKFILL_TYPE_CODE,
   BACKFILL_TYPE_DATETIME,
   IntervalTypeEnum,
@@ -21,6 +22,7 @@ import ErrorsType from '@interfaces/ErrorsType';
 import Flex from '@oracle/components/Flex';
 import FlexContainer from '@oracle/components/FlexContainer';
 import Headline from '@oracle/elements/Headline';
+import OverwriteVariables from '@components/Triggers/OverwriteVariables';
 import PipelineDetailPage from '@components/PipelineDetailPage';
 import PipelineType from '@interfaces/PipelineType';
 import PipelineVariableType from '@interfaces/PipelineVariableType';
@@ -34,6 +36,7 @@ import {
   Alphabet,
   CalendarDate,
   Schedule,
+  Variables as VariablesIcon,
 } from '@oracle/icons';
 import { BACKFILL_TYPES } from './constants';
 import { CardStyle } from '../../Triggers/Edit/index.style';
@@ -45,9 +48,13 @@ import {
 import { capitalize } from '@utils/string';
 import { getDateAndTimeObjFromDatetimeString } from '@oracle/components/Calendar/utils';
 import { getDatetimeFromDateAndTime } from '@components//Triggers/utils';
+import {
+  getFormattedGlobalVariables,
+  getFormattedVariable,
+  parseVariables,
+} from '@components/Sidekick/utils';
+import { isEmptyObject, mapObject, selectKeys } from '@utils/hash';
 import { onSuccess } from '@api/utils/response';
-import { parseVariables } from '@components/Sidekick/utils';
-import { selectKeys } from '@utils/hash';
 import { shouldDisplayLocalTimezone } from '@components/settings/workspace/utils';
 
 type BackfillEditProps = {
@@ -70,6 +77,7 @@ function BackfillEdit({
   const router = useRouter();
   const displayLocalTimezone = shouldDisplayLocalTimezone();
   const [model, setModel] = useState<BackfillType>();
+  const [settings, setSettings] = useState<BackfillSettingsType>();
   const {
     block_uuid: blockUUID,
     id: modelID,
@@ -80,8 +88,20 @@ function BackfillEdit({
   const {
     uuid: pipelineUUID,
   } = pipeline;
+  const runtimeVariablesInit = useMemo(() => (
+    isEmptyObject(modelProp?.variables || {})
+      ? (getFormattedGlobalVariables(variables) || {})
+      : mapObject(modelProp.variables, val => getFormattedVariable(val))
+  ),
+  [
+    modelProp?.variables,
+    variables,
+  ]);
 
-  const [runtimeVariables, setRuntimeVariables] = useState<{ [ variable: string ]: string }>({});
+  const [enableVariablesOverwrite, setEnableVariablesOverwrite] = useState<boolean>(true);
+  const [runtimeVariables, setRuntimeVariables] = useState<{
+    [ variable: string ]: string
+  }>(runtimeVariablesInit);
   const [setupType, setSetupType] = useState<string>(
     blockUUID ? BACKFILL_TYPE_CODE : BACKFILL_TYPE_DATETIME,
   );
@@ -120,6 +140,15 @@ function BackfillEdit({
     }
   }, [displayLocalTimezone, modelProp]);
 
+  useEffect(() => {
+    if (!settings && model?.settings) {
+      setSettings(model.settings);
+    }
+  }, [
+    settings,
+    model?.settings,
+  ]);
+
   const detailsMemo = useMemo(() => {
     const rows = [
       [
@@ -127,7 +156,7 @@ function BackfillEdit({
           alignItems="center"
           key="model_name_detail"
         >
-          <Alphabet default size={1.5 * UNIT} />
+          <Alphabet default />
           <Spacing mr={1} />
           <Text default>
             Backfill name
@@ -156,7 +185,7 @@ function BackfillEdit({
             alignItems="center"
             key="start_time"
           >
-            <CalendarDate default size={1.5 * UNIT} />
+            <CalendarDate default />
             <Spacing mr={1} />
             <Text default>
               Start date and time
@@ -205,7 +234,7 @@ function BackfillEdit({
             alignItems="center"
             key="end_time"
           >
-            <CalendarDate default size={1.5 * UNIT} />
+            <CalendarDate default />
             <Spacing mr={1} />
             <Text default>
               End date and time
@@ -254,7 +283,7 @@ function BackfillEdit({
             alignItems="center"
             key="interval_type"
           >
-            <Schedule default size={1.5 * UNIT} />
+            <Schedule default />
             <Spacing mr={1} />
             <Text default>
               Interval type
@@ -285,7 +314,7 @@ function BackfillEdit({
             alignItems="center"
             key="interval_units"
           >
-            <Schedule default size={1.5 * UNIT} />
+            <Schedule default />
             <Spacing mr={1} />
             <Text default>
               Interval units
@@ -294,12 +323,14 @@ function BackfillEdit({
           <TextInput
             disabled={!intervalType}
             key="interval_unit_input"
+            minValue={1}
             monospace
             onChange={(e) => {
               e.preventDefault();
+              const updatedUnitValue = +e.target.value;
               setModel(s => ({
                 ...s,
-                interval_units: e.target.value,
+                interval_units: updatedUnitValue < 1 ? 1 : updatedUnitValue,
               }));
             }}
             placeholder={intervalType
@@ -312,6 +343,55 @@ function BackfillEdit({
         ],
       ]);
     }
+
+    if (!isEmptyObject(runtimeVariablesInit)) {
+      rows.push([
+        <FlexContainer
+          alignItems="center"
+          key="overwrite_runtime_variables"
+        >
+          <VariablesIcon default />
+          <Spacing mr={1} />
+          <Text default>
+            Runtime variables
+          </Text>
+        </FlexContainer>,
+        <OverwriteVariables
+          borderless
+          compact
+          enableVariablesOverwrite={enableVariablesOverwrite}
+          key="overwrite_runtime_variables_table"
+          runtimeVariables={runtimeVariables}
+          setEnableVariablesOverwrite={setEnableVariablesOverwrite}
+          setRuntimeVariables={setRuntimeVariables}
+        />,
+      ]);
+    }
+
+    rows.push([
+      <FlexContainer
+        alignItems="center"
+        key="concurrency"
+      >
+        <Text default>
+          Max concurrent runs
+        </Text>
+      </FlexContainer>,
+      <TextInput
+        key="concurrency_input"
+        minValue={1}
+        monospace
+        onChange={(e) => {
+          e.preventDefault();
+          setSettings(s => ({
+            ...s,
+            pipeline_run_limit: e.target.value,
+          }));
+        }}
+        type="number"
+        value={settings?.pipeline_run_limit}
+      />,
+    ]);
 
     return (
       <>
@@ -333,9 +413,13 @@ function BackfillEdit({
     dateEnd,
     dateStart,
     displayLocalTimezone,
+    enableVariablesOverwrite,
     intervalType,
     intervalUnits,
     name,
+    runtimeVariables,
+    runtimeVariablesInit,
+    settings?.pipeline_run_limit,
     setupType,
     showCalendarStart,
     showCalendarEnd,
@@ -372,8 +456,9 @@ function BackfillEdit({
       end_datetime: null,
       interval_type: null,
       interval_units: null,
+      settings,
       start_datetime: null,
-      variables: parseVariables(runtimeVariables),
+      variables: enableVariablesOverwrite ? parseVariables(runtimeVariables) : {},
     };
 
     if (BACKFILL_TYPE_CODE === setupType) {
@@ -409,10 +494,12 @@ function BackfillEdit({
     dateEnd,
     dateStart,
     displayLocalTimezone,
+    enableVariablesOverwrite,
     intervalType,
     intervalUnits,
     model,
     runtimeVariables,
+    settings,
     setupType,
     timeEnd,
     timeStart,

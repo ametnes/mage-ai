@@ -5,6 +5,7 @@ import { useRouter } from 'next/router';
 
 import Accordion from '@oracle/components/Accordion';
 import AccordionPanel from '@oracle/components/Accordion/AccordionPanel';
+import Authentication from './Authentication';
 import Button from '@oracle/elements/Button';
 import Divider from '@oracle/elements/Divider';
 import Flex from '@oracle/components/Flex';
@@ -19,18 +20,23 @@ import Table from '@components/shared/Table';
 import Text from '@oracle/elements/Text';
 import TextInput from '@oracle/elements/Inputs/TextInput';
 import api from '@api';
-import { ACTION_FETCH, ACTION_PULL, ACTION_RESET, ACTION_RESET_HARD } from '../constants';
+import useProject from '@utils/models/project/useProject';
+import {
+  ACTION_CLONE,
+  ACTION_FETCH,
+  ACTION_PULL,
+  ACTION_RESET,
+  ACTION_RESET_HARD,
+} from '../constants';
 import {
   Add,
   Branch,
   ChevronRight,
-  GitHubIcon,
   Lightning,
   MultiShare,
   PaginateArrowRight,
   Trash,
 } from '@oracle/icons';
-import { LOCAL_STORAGE_KEY_OAUTH_STATE, set } from '@storage/localStorage';
 import { OauthProviderEnum } from '@interfaces/OauthType';
 import {
   PADDING_UNITS,
@@ -64,6 +70,8 @@ function Remote({
 }: RemoteProps) {
   const router = useRouter();
 
+  const { project } = useProject();
+
   const refInputRepoPath = useRef(null);
 
   const [actionBranchName, setActionBranchName] = useState<string>(null);
@@ -79,10 +87,10 @@ function Remote({
   const gitInitialized = useMemo(() => !!branch?.name, [branch]);
 
   useEffect(() => {
-    if (branch?.sync_config?.repo_path && repoPath === null) {
-      setRepoPath(branch?.sync_config?.repo_path);
+    if (!repoPath && (branch?.sync_config?.repo_path || project?.repo_path)) {
+      setRepoPath(branch?.sync_config?.repo_path || project?.repo_path);
     }
-  }, [branch, repoPath]);
+  }, [branch, project, repoPath]);
 
   const branches = useMemo(() => remotes?.find(({
     name,
@@ -107,21 +115,6 @@ function Remote({
             fetchBranch();
             setEditRepoPathActive(false);
           },
-          onErrorCallback: (response, errors) => showError({
-            errors,
-            response,
-          }),
-        },
-      ),
-    },
-  );
-
-  const [updateOauth, { isLoading: isLoadingUpdateOauth }] = useMutation(
-    api.oauths.useUpdate('github'),
-    {
-      onSuccess: (response: any) => onSuccess(
-        response, {
-          callback: () => window.location.href = window.location.href.split('?')[0],
           onErrorCallback: (response, errors) => showError({
             errors,
             response,
@@ -202,19 +195,12 @@ function Remote({
     },
   );
 
-  const { data: dataOauth, mutate: fetchOauth } = api.oauths.detail(OauthProviderEnum.GITHUB, {
-    redirect_uri: typeof window !== 'undefined' ? encodeURIComponent(window.location.href) : '',
-  });
-  const oauth = useMemo(() => dataOauth?.oauth || {}, [dataOauth]);
-
   const [createOauth, { isLoading: isLoadingCreateOauth }] = useMutation(
     api.oauths.useCreate(),
     {
       onSuccess: (response: any) => onSuccess(
         response, {
-          callback: () => {
-            fetchOauth();
-          },
+          callback: () => window.location.href = `${router.basePath}/version-control`,
           onErrorCallback: (response, errors) => {
             showError({
               errors,
@@ -225,13 +211,20 @@ function Remote({
       ),
     },
   );
-  const { access_token: accessTokenFromURL, provider: providerFromURL } = queryFromUrl() || {};
+  const {
+    access_token: accessTokenFromURL,
+    provider: providerFromURL,
+    refresh_token: refreshTokenFromURL,
+    expires_in: expiresIn,
+  } = queryFromUrl() || {};
   useEffect(() => {
-    if (oauth && !oauth?.authenticated && accessTokenFromURL) {
+    if (accessTokenFromURL) {
       // @ts-ignore
       createOauth({
         oauth: {
+          expires_in: expiresIn,
           provider: providerFromURL || OauthProviderEnum.GITHUB,
+          refresh_token: refreshTokenFromURL,
           token: accessTokenFromURL,
         },
       });
@@ -239,8 +232,9 @@ function Remote({
   }, [
     accessTokenFromURL,
     createOauth,
-    oauth,
+    expiresIn,
     providerFromURL,
+    refreshTokenFromURL,
   ]);
 
   const remotesMemo = useMemo(() => remotes?.map(({
@@ -292,7 +286,7 @@ function Remote({
                 removeRemote({
                   git_custom_branch: {
                     action_type: 'remove_remote',
-                    remote: {
+                    action_payload: {
                       name,
                     },
                   },
@@ -378,65 +372,6 @@ function Remote({
 
   return (
     <>
-      {dataOauth && (
-        <Spacing mb={UNITS_BETWEEN_SECTIONS}>
-          {oauth?.authenticated && (
-            <>
-              <Button
-                beforeIcon={<GitHubIcon size={UNIT * 2} />}
-                disabled
-              >
-                Successfully authenticated with GitHub
-              </Button>
-
-              <Spacing my={1}>
-                <Text muted>
-                  You can pull, push, and create pull requests on GitHub.
-                </Text>
-              </Spacing>
-
-              <Button
-                loading={isLoadingUpdateOauth}
-                // @ts-ignore
-                onClick={() => updateOauth({
-                  oauth: {
-                    action_type: 'reset',
-                  },
-                })}
-                warning
-              >
-                Reset GitHub authentication
-              </Button>
-            </>
-          )}
-          {!oauth?.authenticated && oauth?.url && (
-            <>
-              <Button
-                beforeIcon={<GitHubIcon size={UNIT * 2} />}
-                loading={isLoadingCreateOauth}
-                onClick={() => {
-                  const url = oauth?.url;
-                  const q = queryFromUrl(url);
-                  const state = q.state;
-                  set(LOCAL_STORAGE_KEY_OAUTH_STATE, state);
-                  router.push(oauth?.url);
-                }}
-                primary
-              >
-                Authenticate with GitHub
-              </Button>
-
-              <Spacing mt={1}>
-                <Text muted>
-                  Authenticating with GitHub will allow you to pull, push,
-                  and create pull requests on GitHub.
-                </Text>
-              </Spacing>
-            </>
-          )}
-        </Spacing>
-      )}
-
       <Spacing mb={UNITS_BETWEEN_SECTIONS}>
         <Headline>
           Setup
@@ -451,9 +386,9 @@ function Remote({
             {!gitInitialized && (
               <Text muted>
                 Enter the directory you want to initialize git in.
-                For example, <Text bold inline monospace muted>
-                  /home/src/default_repo
-                </Text>.
+                <br />
+                The current project directoy is filled in for you.
+                If you want to use that, click the save button.
               </Text>
             )}
 
@@ -472,7 +407,9 @@ function Remote({
           <FlexContainer alignItems="center">
             <TextInput
               disabled={gitInitialized && !editRepoPathActive}
+              fullWidth
               label="Git directory"
+              maxWidth={400}
               monospace
               onChange={e => setRepoPath(e.target.value)}
               ref={refInputRepoPath}
@@ -535,6 +472,14 @@ function Remote({
         </Spacing>
       </Spacing>
 
+      <Spacing mb={UNITS_BETWEEN_SECTIONS}>
+        <Authentication
+          branch={branch}
+          isLoadingCreateOauth={isLoadingCreateOauth}
+          showError={showError}
+        />
+      </Spacing>
+
       {gitInitialized && (
         <>
           <Spacing mb={UNITS_BETWEEN_SECTIONS}>
@@ -588,7 +533,7 @@ function Remote({
                     updateGitBranch({
                       git_custom_branch: {
                         action_type: 'add_remote',
-                        remote: {
+                        action_payload: {
                           name: remoteNameNew,
                           url: remoteURLNew,
                         },
@@ -653,6 +598,9 @@ function Remote({
                   <option value={ACTION_RESET}>
                     {capitalizeRemoveUnderscoreLower(ACTION_RESET_HARD)}
                   </option>
+                  <option value={ACTION_CLONE}>
+                    {capitalizeRemoveUnderscoreLower(ACTION_CLONE)}
+                  </option>
                 </Select>
 
                 <Spacing mr={1} />
@@ -672,7 +620,7 @@ function Remote({
                   ))}
                 </Select>
                 
-                {actionName !== ACTION_FETCH && (
+                {![ACTION_FETCH, ACTION_CLONE].includes(actionName) && (
                   <Spacing ml={1}>
                     <Select
                       beforeIcon={<Branch />}
@@ -690,8 +638,57 @@ function Remote({
                     </Select>
                   </Spacing>
                 )}
-
               </FlexContainer>
+
+              {ACTION_CLONE === actionName && (
+                <Spacing mt={PADDING_UNITS}>
+                  <Text muted small>
+                    Cloning a branch will copy all the files and folders from the remote repository
+                    and put them into the Git directory configured above:
+                    <br />
+                    <Text default inline monospace small>
+                      {branch?.sync_config?.repo_path}
+                    </Text>.
+                  </Text>
+
+                  <Spacing mt={1}>
+                    <Text muted small>
+                      Cloning won’t automatically create a folder that is named after the remote repository.
+                    </Text>
+                  </Spacing>
+
+                  <Spacing mt={1}>
+                    <Text muted small>
+                      For example, if you have a file named <Text default inline monospace small>
+                        magic.py
+                      </Text> in a remote repository named <Text default inline monospace small>
+                        project_romeo
+                      </Text>
+                      <br />
+                      then that file will be cloned here <Text default inline monospace small>
+                        {branch?.sync_config?.repo_path}/magic.py
+                      </Text>
+                      <br />
+                      as opposed to <Text default inline monospace small>
+                        {branch?.sync_config?.repo_path}/project_romeo/magic.py
+                      </Text>.
+                    </Text>
+                  </Spacing>
+
+                  <Spacing mt={1}>
+                    <Text muted small>
+                      If you want to clone the content of a remote repository into a folder
+                      named after the remote repository, then change the Git init directoy above to
+                      <br />
+                      <Text default inline monospace small>
+                        {branch?.sync_config?.repo_path}/<Text inline monospace small>
+                          [remote repository name]
+                        </Text>
+                      </Text>
+                    </Text>
+                  </Spacing>
+                </Spacing>
+              )}
 
               <Spacing mt={PADDING_UNITS}>
                 <Button
@@ -700,16 +697,27 @@ function Remote({
                   loading={isLoadingAction}
                   onClick={() => {
                     setActionProgress(null);
-                    // @ts-ignore
-                    actionGitBranch({
-                      git_custom_branch: {
-                        action_type: actionName,
-                        [actionName]: {
-                          branch: actionBranchName,
-                          remote: actionRemoteName,
+                    if (actionName !== ACTION_CLONE || (
+                        typeof window !== 'undefined'
+                        && typeof location !== 'undefined'
+                        && window.confirm(
+                          `Are you sure you want to clone remote ${actionRemoteName}? This will ` +
+                          'overwrite all your local changes and may reset any settings you may ' + 
+                          'have configured for your local Git repo. This action cannot be undone.',
+                        )
+                      )
+                    ) {
+                      // @ts-ignore
+                      actionGitBranch({
+                        git_custom_branch: {
+                          action_payload: {
+                            branch: actionBranchName,
+                            remote: actionRemoteName,
+                          },
+                          action_type: actionName,
                         },
-                      },
-                    });
+                      });
+                    }
                   }}
                   primary
                 >

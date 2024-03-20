@@ -1,4 +1,4 @@
-from typing import IO, List, Mapping, Union
+from typing import IO, Dict, List, Mapping, Union
 
 import numpy as np
 import pandas as pd
@@ -52,13 +52,23 @@ class MySQL(BaseSQL):
         dtypes: Mapping[str, str],
         schema_name: str,
         table_name: str,
+        auto_clean_name: bool = True,
+        case_sensitive: bool = False,
         unique_constraints: List[str] = None,
+        overwrite_types: Dict = None,
+        **kwargs,
     ) -> str:
         if unique_constraints is None:
             unique_constraints = []
         query = []
         for cname in dtypes:
-            query.append(f'`{clean_name(cname)}` {dtypes[cname]} NULL')
+            if overwrite_types is not None and cname in overwrite_types.keys():
+                dtypes[cname] = overwrite_types[cname]
+            if auto_clean_name:
+                cleaned_col_name = clean_name(cname, case_sensitive=case_sensitive)
+            else:
+                cleaned_col_name = cname
+            query.append(f'`{cleaned_col_name}` {dtypes[cname]} NULL')
 
         return f'CREATE TABLE {table_name} (' + ','.join(query) + ');'
 
@@ -123,7 +133,9 @@ class MySQL(BaseSQL):
         for _, row in df_.iterrows():
             values.append(tuple([str(val) if type(val) is pd.Timestamp else val for val in row]))
 
-        sql = f'INSERT INTO {full_table_name} VALUES ({values_placeholder})'
+        insert_columns = ', '.join([f'`{col}`'for col in columns])
+
+        sql = f'INSERT INTO {full_table_name} ({insert_columns}) VALUES ({values_placeholder})'
         cursor.executemany(sql, values)
 
     def get_type(self, column: Series, dtype: str) -> str:

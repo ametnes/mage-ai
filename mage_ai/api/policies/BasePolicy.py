@@ -403,6 +403,9 @@ class BasePolicy(UserPermissionMixIn, ResultSetMixIn):
         ):
             return True
 
+        if not DISABLE_NOTEBOOK_EDIT_ACCESS and REQUIRE_USER_PERMISSIONS and self.is_owner():
+            return True
+
         config = self.__class__.action_rule(action)
         if config:
             await self.__validate_scopes(action, config.keys())
@@ -433,6 +436,9 @@ class BasePolicy(UserPermissionMixIn, ResultSetMixIn):
 
     async def authorize_attribute(self, read_or_write, attrb, **kwargs):
         if not REQUIRE_USER_AUTHENTICATION or self.is_owner():
+            return True
+
+        if not DISABLE_NOTEBOOK_EDIT_ACCESS and REQUIRE_USER_PERMISSIONS and self.is_owner():
             return True
 
         api_operation_action = self.options.get(
@@ -508,6 +514,9 @@ class BasePolicy(UserPermissionMixIn, ResultSetMixIn):
         if not DISABLE_NOTEBOOK_EDIT_ACCESS and (
             not REQUIRE_USER_AUTHENTICATION or self.is_owner()
         ):
+            return True
+
+        if not DISABLE_NOTEBOOK_EDIT_ACCESS and REQUIRE_USER_PERMISSIONS and self.is_owner():
             return True
 
         query_filtered = ignore_keys(query or {}, [URL_PARAMETER_API_KEY])
@@ -607,17 +616,17 @@ class BasePolicy(UserPermissionMixIn, ResultSetMixIn):
     async def __validate_condition(
         self,
         action,
-        conditions: List[Callable[['BasePolicy'], None]],
+        conditions_functions: List[Callable[['BasePolicy'], None]],
         attribute_operation: AttributeOperationType = None,
         operation: OperationType = None,
         override_permission_conditions: List[Callable[['BasePolicy'], None]] = None,
         **kwargs,
     ):
-        if not conditions or len(conditions) == 0:
+        if not conditions_functions or len(conditions_functions) == 0:
             return
 
         validation = False
-        for condition in conditions:
+        for condition in conditions_functions:
             validation = condition(self)
             if validation is not None and inspect.isawaitable(validation):
                 validation = await validation

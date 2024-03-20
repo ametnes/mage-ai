@@ -119,7 +119,9 @@ export type SidekickProps = {
   isPipelineExecuting: boolean;
   lastTerminalMessage: WebSocketEventMap['message'] | null;
   metadata: MetadataType;
-  onUpdateFileSuccess?: (fileContent: FileType) => void;
+  onUpdateFileSuccess?: (fileContent: FileType, opts?: {
+    blockUUID: string;
+  }) => void;
   permissions?: InteractionPermission[] | InteractionPermissionWithUUID[];
   pipeline: PipelineType;
   pipelineInteraction: PipelineInteractionType;
@@ -133,11 +135,14 @@ export type SidekickProps = {
   selectedBlock: BlockType;
   selectedFilePath?: string;
   sendTerminalMessage: (message: string, keep?: boolean) => void;
+  setActiveSidekickView: (
+    newView: ViewKeyEnum,
+    pushHistory?: boolean,
+  ) => void;
   setAllowCodeBlockShortcuts?: (allowCodeBlockShortcuts: boolean) => void;
   setBlockInteractionsMapping: (prev: any) => {
     [blockUUID: string]: BlockInteractionType[];
   };
-  setDepGraphZoom?: (zoom: number) => void;
   setDisableShortcuts: (disableShortcuts: boolean) => void;
   setHiddenBlocks: ((opts: {
     [uuid: string]: BlockType;
@@ -212,10 +217,10 @@ function Sidekick({
   selectedBlock,
   selectedFilePath,
   sendTerminalMessage,
+  setActiveSidekickView,
   setAllowCodeBlockShortcuts,
   setAnyInputFocused,
   setBlockInteractionsMapping,
-  setDepGraphZoom,
   setDisableShortcuts,
   setEditingBlock,
   setErrors,
@@ -311,6 +316,7 @@ function Sidekick({
   const fileVersionsMemo = useMemo(() => (
     <FileVersions
       onActionCallback={onUpdateFileSuccess}
+      pipeline={pipeline}
       selectedBlock={selectedBlock}
       selectedFilePath={selectedFilePath}
       setErrors={setErrors}
@@ -319,6 +325,7 @@ function Sidekick({
   ), [
     afterWidth,
     onUpdateFileSuccess,
+    pipeline,
     selectedBlock,
     selectedFilePath,
     setErrors,
@@ -519,6 +526,7 @@ function Sidekick({
       fetchPipeline={fetchPipeline}
       globalDataProducts={globalDataProducts}
       pipeline={pipeline}
+      project={project}
       setSelectedBlock={setSelectedBlock}
       showDataIntegrationModal={showDataIntegrationModal}
       showUpdateBlockModal={showUpdateBlockModal}
@@ -530,6 +538,7 @@ function Sidekick({
     fetchPipeline,
     globalDataProducts,
     pipeline,
+    project,
     selectedBlock,
     setSelectedBlock,
     showDataIntegrationModal,
@@ -591,8 +600,13 @@ function Sidekick({
           <ApiReloader uuid={`PipelineDetail/${pipeline?.uuid}`}>
             <>
               <DependencyGraph
+                addNewBlockAtIndex={addNewBlockAtIndex}
                 blockRefs={blockRefs}
                 blocks={blocks}
+                contentByBlockUUID={contentByBlockUUID}
+                contextMenuEnabled
+                deleteBlock={deleteBlock}
+                dragEnabled
                 editingBlock={editingBlock}
                 enablePorts={!isIntegration}
                 fetchPipeline={fetchPipeline}
@@ -612,8 +626,10 @@ function Sidekick({
                   };
                 })}
                 pipeline={pipeline}
+                runBlock={runBlock}
                 runningBlocks={runningBlocks}
                 selectedBlock={selectedBlock}
+                setActiveSidekickView={setActiveSidekickView}
                 setEditingBlock={setEditingBlock}
                 setErrors={setErrors}
                 setSelectedBlock={(block) => {
@@ -623,7 +639,7 @@ function Sidekick({
                     scrollToBlock(block);
                   }
                 }}
-                setZoom={setDepGraphZoom}
+                showUpdateBlockModal={showUpdateBlockModal}
                 treeRef={treeRef}
               />
               {!blockEditing && PipelineTypeEnum.STREAMING === pipeline?.type && (

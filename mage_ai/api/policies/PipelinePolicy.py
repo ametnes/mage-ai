@@ -39,6 +39,7 @@ PipelinePolicy.allow_read(PipelinePresenter.default_attributes + [
     'callbacks',
     'conditionals',
     'extensions',
+    'schedules',
 ], scopes=[
     OauthScope.CLIENT_PRIVATE,
 ], on_action=[
@@ -109,6 +110,7 @@ PipelinePolicy.allow_write([
 
 PipelinePolicy.allow_write([
     'pipeline_runs',
+    'pipeline_schedule_id',
     'status',
 ], scopes=[
     OauthScope.CLIENT_PRIVATE,
@@ -118,6 +120,7 @@ PipelinePolicy.allow_write([
 
 PipelinePolicy.allow_query([
     'include_block_pipelines',
+    'include_schedules',
     'includes_block_metadata',
     'includes_content',
     'includes_extensions',
@@ -128,9 +131,24 @@ PipelinePolicy.allow_query([
     constants.DETAIL,
 ], condition=lambda policy: policy.has_at_least_viewer_role())
 
+PipelinePolicy.allow_query(
+    [
+        'includes_outputs_spark',
+    ],
+    scopes=[
+        OauthScope.CLIENT_PRIVATE,
+    ],
+    on_action=[
+        constants.DETAIL,
+    ],
+    condition=lambda policy: policy.has_at_least_viewer_role(),
+    override_permission_condition=lambda _policy: True,
+)
+
 PipelinePolicy.allow_query([
     'from_history_days',
     'include_schedules',
+    'search',
     'status[]',
     'tag[]',
     'type[]',

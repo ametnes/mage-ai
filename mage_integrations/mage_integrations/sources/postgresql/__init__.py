@@ -17,12 +17,14 @@ from mage_integrations.sources.constants import (
     COLUMN_FORMAT_DATETIME,
     COLUMN_FORMAT_UUID,
     REPLICATION_METHOD_FULL_TABLE,
+    REPLICATION_METHOD_INCREMENTAL,
     REPLICATION_METHOD_LOG_BASED,
 )
 from mage_integrations.sources.messages import write_state
 from mage_integrations.sources.postgresql.decoders import (
     Delete,
     Insert,
+    Relation,
     Update,
     decode_message,
 )
@@ -153,6 +155,8 @@ WHERE TABLE_NAME = '{table_name}' AND TABLE_SCHEMA = '{schema_name}'
                 raise Exception(f'Unable to start replication with logical replication slot {slot}')
 
             columns = self.get_columns(tap_stream_id)
+            # Map from relation id to relation name
+            relations = dict()
             while True:
                 poll_duration = (datetime.datetime.now() - begin_ts).total_seconds()
                 if poll_duration > poll_total_seconds:
@@ -166,12 +170,24 @@ WHERE TABLE_NAME = '{table_name}' AND TABLE_SCHEMA = '{schema_name}'
                     if msg.data_start > end_lsn:
                         self.logger.info(f'Gone past end_lsn {end_lsn} for run. breaking')
                         break
-
                     decoded_payload = decode_message(msg.payload)
+
+                    if type(decoded_payload) is Relation:
+                        relations[decoded_payload.relation_id] = decoded_payload.relation_name
+
                     if msg.data_start < start_lsn:
                         self.logger.info(
                             f'Msg lsn {msg.data_start} smaller than start lsn {start_lsn}')
                         continue
+
+                    if not type(decoded_payload) in [Delete, Insert, Update]:
+                        continue
+
+                    relation_name = relations.get(decoded_payload.relation_id)
+                    # Skip if the relation name doesn't match the stream name
+                    if not relation_name or relation_name != stream.tap_stream_id:
+                        continue
+
                     if type(decoded_payload) in [Insert, Update]:
                         values = [c.col_data for c in decoded_payload.new_tuple.column_data]
                         payload = dict(zip(columns, values))
@@ -231,6 +247,9 @@ WHERE TABLE_NAME = '{table_name}' AND TABLE_SCHEMA = '{schema_name}'
     def _get_bookmark_properties_for_stream(self, stream, bookmarks: Dict = None) -> List[str]:
         if REPLICATION_METHOD_LOG_BASED == self._replication_method(stream, bookmarks=bookmarks):
             return [INTERNAL_COLUMN_LSN]
+        elif REPLICATION_METHOD_LOG_BASED == stream.replication_method:
+            # Initial sync for LOG_BASED replication
+            return self._get_replication_key(stream)
         else:
             return super()._get_bookmark_properties_for_stream(stream)
 
@@ -239,7 +258,11 @@ WHERE TABLE_NAME = '{table_name}' AND TABLE_SCHEMA = '{schema_name}'
             return stream.replication_method
         # Ues full table sync for the initial sync of log based replcation
         if not bookmarks or not bookmarks.get(INTERNAL_COLUMN_LSN):
-            return REPLICATION_METHOD_FULL_TABLE
+            if self._get_replication_key(stream):
+                # If bookmark columns are selected, use incremental sync as the initial sync
+                return REPLICATION_METHOD_INCREMENTAL
+            else:
+                return REPLICATION_METHOD_FULL_TABLE
 
         return stream.replication_method
 

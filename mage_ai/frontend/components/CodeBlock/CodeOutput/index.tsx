@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Ansi from 'ansi-to-react';
 import InnerHTML from 'dangerously-set-html-content';
 import { useMutation } from 'react-query';
@@ -22,6 +22,7 @@ import KernelOutputType, {
   DataTypeEnum,
   DATA_TYPE_TEXTLIKE,
 } from '@interfaces/KernelOutputType';
+import MultiOutput from './MultiOutput';
 import PipelineType, { PipelineTypeEnum } from '@interfaces/PipelineType';
 import ProgressBar from '@oracle/components/ProgressBar';
 import Spacing from '@oracle/elements/Spacing';
@@ -47,6 +48,7 @@ import {
   INTERNAL_TEST_REGEX,
   INTERNAL_TEST_STRING,
 } from '@utils/models/output';
+import { OutputDisplayTypeEnum } from './constants';
 import { PADDING_UNITS, UNIT } from '@oracle/styles/units/spacing';
 import { ResponseTypeEnum } from '@api/constants';
 import { SCROLLBAR_WIDTH } from '@oracle/styles/scrollbars';
@@ -62,8 +64,11 @@ import { ViewKeyEnum } from '@components/Sidekick/constants';
 import { addDataOutputBlockUUID, openSaveFileDialog } from '@components/PipelineDetail/utils';
 import { isJsonString } from '@utils/string';
 import { onSuccess } from '@api/utils/response';
+import { isObject } from '@utils/hash';
+import { range } from '@utils/array';
 
 type CodeOutputProps = {
+  alwaysShowExtraInfo?: boolean;
   block: BlockType;
   blockIndex?: number;
   blockMetadata?: {
@@ -74,16 +79,20 @@ type CodeOutputProps = {
   };
   buttonTabs?: any;
   children?: any;
+  childrenBelowTabs?: any;
   collapsed?: boolean;
   contained?: boolean;
   hasOutput?: boolean;
   hideExtraInfo?: boolean;
+  hideOutput?: boolean;
   isInProgress: boolean;
   mainContainerWidth?: number;
   messages: KernelOutputType[];
   messagesAll?: KernelOutputType[];
   onClickSelectBlock?: () => void;
   openSidekickView?: (newView: ViewKeyEnum, pushHistory?: boolean) => void;
+  outputDisplayType?: OutputDisplayTypeEnum;
+  outputRowNormalPadding?: boolean;
   pipeline?: PipelineType;
   runCount?: number;
   runEndTime?: number;
@@ -97,6 +106,7 @@ type CodeOutputProps = {
   setSelectedTab?: (tab: TabType) => void;
   showBorderTop?: boolean;
   sideBySideEnabled?: boolean;
+  sparkEnabled?: boolean;
 } & BorderColorShareProps;
 
 const SHARED_TOOLTIP_PROPS = {
@@ -115,11 +125,13 @@ const SHARED_BUTTON_PROPS = {
 };
 
 function CodeOutput({
+  alwaysShowExtraInfo,
   block,
   blockIndex,
   blockMetadata,
   buttonTabs,
   children,
+  childrenBelowTabs,
   collapsed,
   contained = true,
   dynamicBlock,
@@ -127,12 +139,15 @@ function CodeOutput({
   hasError,
   hasOutput,
   hideExtraInfo,
+  hideOutput,
   isInProgress,
   mainContainerWidth,
   messages,
   messagesAll,
   onClickSelectBlock,
   openSidekickView,
+  outputDisplayType,
+  outputRowNormalPadding,
   pipeline,
   runCount,
   runEndTime,
@@ -147,15 +162,13 @@ function CodeOutput({
   setSelectedTab,
   showBorderTop,
   sideBySideEnabled,
+  sparkEnabled,
 }: CodeOutputProps, ref) {
   const [mounted, setMounted] = useState(false);
 
-  // const startTime = performance.now();
-  // useEffect(() => {
-  //   const duration = performance.now() - startTime;
-  //   console.log('CodeOutput render', duration);
-  //   setMounted(true);
-  // }, []);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   const dispatchEventChanged = useCallback(() => {
     const evt = new CustomEvent(CUSTOM_EVENT_BLOCK_OUTPUT_CHANGED, {
@@ -164,9 +177,7 @@ function CodeOutput({
       },
     });
 
-    if (typeof window !== 'undefined') {
-      window.dispatchEvent(evt);
-    }
+    window.dispatchEvent(evt);
   }, [
     blockIndex,
   ]);
@@ -255,7 +266,8 @@ function CodeOutput({
 
       if (DATA_TYPE_TEXTLIKE.includes(last?.type)
         && last?.type === curr.type
-        && !combineTextData(curr?.data).match(INTERNAL_OUTPUT_REGEX)
+        && !isObject(combineTextData(curr?.data))
+        && !combineTextData(curr?.data)?.match(INTERNAL_OUTPUT_REGEX)
       ) {
         if (Array.isArray(last.data)) {
           last.data.concat(curr.data);
@@ -264,7 +276,8 @@ function CodeOutput({
           last.data = [last.data, currentText].join('\n');
         }
       } else if (DATA_TYPE_TEXTLIKE.includes(curr?.type)
-        && !combineTextData(curr?.data).match(INTERNAL_OUTPUT_REGEX)
+        && !isObject(combineTextData(curr?.data))
+        && !combineTextData(curr?.data)?.match(INTERNAL_OUTPUT_REGEX)
       ) {
         arr.push({
           ...curr,
@@ -299,8 +312,8 @@ function CodeOutput({
 
   const hasErrorPrev = usePrevious(hasError);
   useEffect(() => {
-    if (isDBT && !hasErrorPrev && hasError) {
-      setSelectedTab(TAB_DBT_LOGS_UUID);
+    if (isDBT && !hasErrorPrev && hasError && setSelectedTab) {
+      setSelectedTab?.(TAB_DBT_LOGS_UUID);
     }
   }, [
     hasError,
@@ -314,15 +327,48 @@ function CodeOutput({
     tableContent,
     testContent,
   } = useMemo(() => {
-    const createDataTableElement = ({
-      columns,
-      index,
-      rows,
-      shape,
-    }, {
+    const createDataTableElement = (output, {
       borderTop,
       selected: selectedProp,
-    }) => {
+    }, dataInit: {
+      multi_output?: boolean;
+    } = {}) => {
+      const {
+        columns,
+        index,
+        rows,
+        shape,
+      } = output;
+
+      if (dataInit && isObject(dataInit) && !!dataInit?.multi_output) {
+        return (
+          <MultiOutput
+            outputs={rows?.map((row, idx: number) => ({
+              render: () => {
+                if (!row) {
+                  return <div />;
+                }
+
+                const {
+                  data,
+                  type,
+                } = row;
+                if (DataTypeEnum.TABLE === type) {
+                  return createDataTableElement(data, {
+                    borderTop,
+                    selected: selectedProp,
+                  });
+                }
+
+                return data;
+              },
+              uuid: columns?.[idx],
+            }))}
+          />
+        );
+      }
+
+
       if (shape) {
         setDataFrameShape(shape);
       }
@@ -339,7 +385,7 @@ function CodeOutput({
         );
       }
 
-      return rows.length >= 1 && (
+      return rows?.length >= 1 && (
         <DataTable
           columns={columns}
           disableScrolling={!selectedProp}
@@ -422,16 +468,16 @@ function CodeOutput({
           contained,
           first: idx === 0 && idxInner === 0,
           last: idx === combinedMessages.length - 1 && idxInner === dataArrayLength - 1,
-          normalPadding: sideBySideEnabled,
+          normalPadding: outputRowNormalPadding, sideBySideEnabled,
         };
 
         const borderTop = idx >= 1;
 
-        if (typeof data === 'string' && data.match(INTERNAL_TEST_REGEX)) {
+        if (typeof data === 'string' && data?.match(INTERNAL_TEST_REGEX)) {
           const parts = data.split('\n');
           const partsNonTest = [];
           parts.forEach((part: string) => {
-            if (part.match(INTERNAL_TEST_REGEX)) {
+            if (part?.match(INTERNAL_TEST_REGEX)) {
               const parts = part.split(INTERNAL_TEST_STRING);
               const rawString = parts[parts.length - 1];
               if (isJsonString(rawString)) {
@@ -451,7 +497,7 @@ function CodeOutput({
 
         if (data === null) {
           return;
-        } else if (typeof data === 'string' && data.match(INTERNAL_OUTPUT_REGEX)) {
+        } else if (typeof data === 'string' && data?.match(INTERNAL_OUTPUT_REGEX)) {
           const parts = data.split(INTERNAL_OUTPUT_STRING);
           let rawString = parts[parts.length - 1];
 
@@ -465,58 +511,174 @@ function CodeOutput({
           }
 
           if (isJsonString(rawString)) {
-            const {
-              data: dataDisplay,
-              type: typeDisplay,
-            } = JSON.parse(rawString);
+            const data = JSON.parse(rawString);
 
-            if (DataTypeEnum.TABLE === typeDisplay) {
-              isTable = true;
-
-              const tableEl = createDataTableElement(dataDisplay, {
-                borderTop,
-                selected,
-              });
-              tableContent.push(tableEl);
-
-              if (!isDBT) {
+            if (data?.[0] && isObject(data?.[0]) && DataTypeEnum.TEXT === data?.[0]?.type) {
+              if (Array.isArray(data?.[0]?.text_data)) {
+                isTable = true;
+                const rows = data?.map(d => d?.text_data);
+                const columns = range(Math.max(...rows?.map(row => row?.length)))?.map((_, idx) => `col${idx}`);
+                const shape = [rows?.length, columns?.length];
+                const index = rows?.map((_, idx) => idx);
+                const tableEl = createDataTableElement({
+                  rows,
+                  columns,
+                  shape,
+                  index,
+                }, {
+                  borderTop,
+                  selected,
+                }, data);
+                tableContent.push(tableEl);
                 displayElement = tableEl;
+              } else {
+                const textArr = data?.map(d => d?.text_data);
+                displayElement = (
+                  <OutputRowStyle {...outputRowSharedProps}>
+                    {textArr.map((t) => (
+                      <Text key={t} monospace preWrap>
+                        {t?.length >= 1 && typeof t === 'string' && (
+                          <Ansi>
+                            {t}
+                          </Ansi>
+                        )}
+                        {!t?.length && (
+                          <>&nbsp;</>
+                        )}
+                      </Text>
+                    ))}
+                  </OutputRowStyle>
+                );
+              }
+            } else {
+              const {
+                data: dataDisplay,
+                type: typeDisplay,
+              } = data;
+
+              if (DataTypeEnum.TABLE === typeDisplay) {
+                if (dataDisplay) {
+                  isTable = true;
+                  const tableEl = createDataTableElement(dataDisplay, {
+                    borderTop,
+                    selected,
+                  }, data);
+                  tableContent.push(tableEl);
+
+                  if (!isDBT) {
+                    displayElement = tableEl;
+                  }
+                }
               }
             }
           }
         } else if (dataType === DataTypeEnum.TABLE) {
-          isTable = true;
-          const tableEl = createDataTableElement(
-            isJsonString(data) ? JSON.parse(data) : data,
-            {
+          const dataDisplay = isJsonString(data) ? JSON.parse(data) : data;
+          if (dataDisplay) {
+            isTable = true;
+            const tableEl = createDataTableElement(dataDisplay, {
               borderTop,
               selected,
-            },
-          );
-          tableContent.push(tableEl);
+            }, output);
+            tableContent.push(tableEl);
 
-          if (!isDBT) {
-            displayElement = tableEl;
+            if (!isDBT) {
+              displayElement = tableEl;
+            }
           }
         } else if (DATA_TYPE_TEXTLIKE.includes(dataType)) {
-          const textArr = data?.split('\\n');
+          if (isObject(data)) {
+            if (output?.multi_output && DataTypeEnum.TEXT === output?.type) {
+              const {
+                // @ts-ignore
+                columns,
+                // @ts-ignore
+                rows,
+              } = data;
 
-          displayElement = (
-            <OutputRowStyle {...outputRowSharedProps}>
-              {textArr.map((t) => (
-                <Text key={t} monospace preWrap>
-                  {t?.length >= 1 && (
-                    <Ansi>
-                      {t}
-                    </Ansi>
-                  )}
-                  {!t?.length && (
-                    <>&nbsp;</>
-                  )}
-                </Text>
-              ))}
-            </OutputRowStyle>
-          );
+              displayElement = (
+                <MultiOutput
+                  outputs={rows?.map(({
+                    data: value,
+                    type: typeInner,
+                  }, idx: number) => ({
+                    render: () => {
+                      if (DATA_TYPE_TEXTLIKE.includes(typeInner)) {
+                        const textArr = value?.split('\\n');
+                        return (
+                          <OutputRowStyle
+                            contained
+                            first
+                            last
+                            normalPadding
+                          >
+                            {textArr.map((t) => (
+                              <Text key={t} monospace preWrap>
+                                {t?.length >= 1 && typeof t === 'string' && (
+                                  <Ansi>
+                                    {t}
+                                  </Ansi>
+                                )}
+                                {!t?.length && (
+                                  <>&nbsp;</>
+                                )}
+                              </Text>
+                            ))}
+                          </OutputRowStyle>
+                        );
+                      } else if (DataTypeEnum.TABLE === typeInner && isObject(value)) {
+                        return createDataTableElement(value, {
+                          borderTop,
+                          selected,
+                        });
+                      }
+                    },
+                    uuid: columns?.[idx],
+                  }))}
+                />
+              );
+              // @ts-ignore
+            } else if (data?.data) {
+              // @ts-ignore
+              const textArr = data?.data?.split('\\n');
+
+              displayElement = (
+                <OutputRowStyle {...outputRowSharedProps}>
+                  {textArr.map((t) => (
+                    <Text key={t} monospace preWrap>
+                      {t?.length >= 1 && typeof t === 'string' && (
+                        <Ansi>
+                          {t}
+                        </Ansi>
+                      )}
+                      {!t?.length && (
+                        <>&nbsp;</>
+                      )}
+                    </Text>
+                  ))}
+                </OutputRowStyle>
+              );
+            }
+          } else {
+            const textArr = data?.split('\\n');
+
+            displayElement = (
+              <OutputRowStyle {...outputRowSharedProps}>
+                {textArr.map((t) => (
+                  <Text key={t} monospace preWrap>
+                    {t?.length >= 1 && typeof t === 'string' && (
+                      <Ansi>
+                        {t}
+                      </Ansi>
+                    )}
+                    {!t?.length && (
+                      <>&nbsp;</>
+                    )}
+                  </Text>
+                ))}
+              </OutputRowStyle>
+            );
+          }
         } else if (dataType === DataTypeEnum.TEXT_HTML) {
           if (data) {
             displayElement = (
@@ -555,7 +717,7 @@ function CodeOutput({
       }
     });
 
-    if (isInProgress && pipeline?.type === PipelineTypeEnum.PYSPARK) {
+    if (isInProgress && pipeline?.type === PipelineTypeEnum.PYSPARK && !sparkEnabled) {
       arrContent.unshift([
         <OutputRowStyle
           contained
@@ -579,10 +741,12 @@ function CodeOutput({
     isDBT,
     isInProgress,
     mainContainerWidth,
+    outputRowNormalPadding,
     pipeline,
     progressBar,
     renderMessagesRaw,
     selected,
+    sparkEnabled,
   ]);
 
   const columnCount = dataFrameShape?.[1] || 0;
@@ -593,10 +757,10 @@ function CodeOutput({
   const currentContentToDisplay = useMemo(() => {
     let el;
 
-    if (isDBT && selectedTab) {
-      const tabUUID = selectedTab.uuid;
+    if ((isDBT && selectedTab) || outputDisplayType) {
+      const tabUUID = selectedTab?.uuid;
 
-      if (TAB_DBT_PREVIEW_UUID.uuid === tabUUID) {
+      if (TAB_DBT_PREVIEW_UUID.uuid === tabUUID || OutputDisplayTypeEnum.DATA === outputDisplayType) {
         if (tableContent?.length >= 1) {
           el = tableContent;
         } else if (!isInProgress) {
@@ -611,7 +775,7 @@ function CodeOutput({
             </Spacing>
           );
         }
-      } else if (TAB_DBT_LOGS_UUID.uuid === tabUUID) {
+      } else if (TAB_DBT_LOGS_UUID.uuid === tabUUID || OutputDisplayTypeEnum.LOGS === outputDisplayType) {
         if (content?.length >= 1) {
           el = content;
         } else if (!isInProgress) {
@@ -633,7 +797,7 @@ function CodeOutput({
             <CodeEditor
               autoHeight
               language={FileExtensionEnum.SQL}
-              padding
+              padding={UNIT * 2}
               readOnly
               value={sql}
               width="100%"
@@ -646,6 +810,7 @@ function CodeOutput({
         const lineage = blockMetadata?.dbt?.lineage;
         if (lineage) {
           el = (
+            // @ts-ignore
             <DependencyGraph
               disabled
               enablePorts={false}
@@ -669,16 +834,22 @@ function CodeOutput({
     return (
       <>
         {buttonTabs}
-        {el}
+
+        {childrenBelowTabs}
+
+        {!hideOutput && el}
       </>
     );
   }, [
     blockMetadata,
     buttonTabs,
+    childrenBelowTabs,
     content,
     hasError,
+    hideOutput,
     isDBT,
     isInProgress,
+    outputDisplayType,
     pipeline,
     selected,
     selectedTab,
@@ -686,7 +857,13 @@ function CodeOutput({
     tableContent,
   ]);
 
-  if (!buttonTabs && !hasError && !hasOutput && !renderMessagesRaw && !children) {
+  if (!buttonTabs
+    && !hasError
+    && !hasOutput
+    && !renderMessagesRaw
+    && !children
+    && !alwaysShowExtraInfo
+  ) {
     return null;
   }
 
@@ -761,7 +938,7 @@ function CodeOutput({
           </>
         )}
 
-        {executedAndIdle && !hideExtraInfo && (
+        {(alwaysShowExtraInfo || (executedAndIdle && !hideExtraInfo)) && (
           <ExtraInfoStyle
             {...borderColorShareProps}
             blockType={blockType}

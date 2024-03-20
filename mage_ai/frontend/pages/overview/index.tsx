@@ -1,5 +1,5 @@
 import { MutateFunction, useMutation } from 'react-query';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/router';
 import moment from 'moment';
 
@@ -28,7 +28,6 @@ import Tooltip from '@oracle/components/Tooltip';
 import Widget from '@components/PipelineRun/Widget';
 import api from '@api';
 import dark from '@oracle/styles/themes/dark';
-import usePrevious from '@utils/usePrevious';
 import {
   AggregationFunctionEnum,
   ChartStyleEnum,
@@ -50,7 +49,7 @@ import { BlockTypeEnum } from '@interfaces/BlockType';
 import { DataSourceEnum } from '@interfaces/BlockLayoutItemType';
 import { ErrorProvider } from '@context/Error';
 import { HEADER_HEIGHT } from '@components/shared/Header/index.style';
-import { MonitorStatsEnum, RunCountStatsType } from '@interfaces/MonitorStatsType';
+import { MonitorStatsEnum } from '@interfaces/MonitorStatsType';
 import { NAV_TAB_PIPELINES } from '@components/CustomTemplates/BrowseTemplates/constants';
 import { RunStatus } from '@interfaces/BlockRunType';
 import { SHARED_UTC_TOOLTIP_PROPS } from '@components/PipelineRun/shared/constants';
@@ -69,13 +68,15 @@ import {
   TAB_DASHBOARD,
   TAB_TODAY,
 } from '@components/Dashboard/constants';
-import { UNIT, UNITS_BETWEEN_SECTIONS } from '@oracle/styles/units/spacing';
+import { UNITS_BETWEEN_SECTIONS } from '@oracle/styles/units/spacing';
+import { VERTICAL_NAVIGATION_WIDTH } from '@components/Dashboard/index.style';
 import {
   capitalize,
   cleanName,
   randomSimpleHashGenerator,
   randomNameGenerator,
 } from '@utils/string';
+import { formatNumber } from '@utils/number';
 import { getAllPipelineRunDataGrouped } from '@components/PipelineRun/shared/utils';
 import { getNewPipelineButtonMenuItems } from '@components/Dashboard/utils';
 import { goToWithQuery } from '@utils/routing';
@@ -84,6 +85,7 @@ import { onSuccess } from '@api/utils/response';
 import { queryFromUrl } from '@utils/url';
 import { storeLocalTimezoneSetting } from '@components/settings/workspace/utils';
 import { useModal } from '@context/Modal';
+import UploadPipeline from '@components/PipelineDetail/UploadPipeline';
 
 const SHARED_WIDGET_SPACING_PROPS = {
   mt: 2,
@@ -94,32 +96,27 @@ const SHARED_FETCH_OPTIONS = {
   revalidateOnFocus: false,
 };
 
-function OverviewPage() {
+function OverviewPage({
+  tab,
+}: {
+  tab?: TimePeriodEnum;
+}) {
+  const abortRef = useRef(null);
+  const mountedRef = useRef(false);
   const refSubheader = useRef(null);
 
   const q = queryFromUrl();
   const router = useRouter();
   const newPipelineButtonMenuRef = useRef(null);
-  const [selectedTab, setSelectedTab] = useState<TabType>(TAB_TODAY);
+  const [selectedTab, setSelectedTabState] =
+    useState<TabType>(TIME_PERIOD_TABS.find(({ uuid }) => uuid === tab) || TAB_TODAY);
+
   const [addButtonMenuOpen, setAddButtonMenuOpen] = useState<boolean>(false);
   const [errors, setErrors] = useState<ErrorsType>(null);
 
   const timePeriod = selectedTab?.uuid;
 
   const allTabs = useMemo(() => TIME_PERIOD_TABS.concat(TAB_DASHBOARD), []);
-
-  const selectedTabPrev = usePrevious(selectedTab);
-  useEffect(() => {
-    const uuid = q[TAB_URL_PARAM];
-    if (uuid) {
-      setSelectedTab(allTabs.find(({ uuid: tabUUID }) => tabUUID === uuid));
-    }
-  }, [
-    allTabs,
-    q,
-    selectedTab,
-    selectedTabPrev,
-  ]);
 
   const startDateString = useMemo(() =>
     getStartDateStringFromPeriod(timePeriod, { isoString: true }),
@@ -129,15 +126,59 @@ function OverviewPage() {
     group_by_pipeline_type: 1,
     start_time: startDateString,
   }), [startDateString]);
-  const {
-    data: dataMonitor,
-    isValidating: isValidatingMonitorStats,
-    mutate: fetchMonitorStats,
-  } = api.monitor_stats.detail(
-    MonitorStatsEnum.PIPELINE_RUN_COUNT,
-    monitorStatsQueryParams,
-    { ...SHARED_FETCH_OPTIONS },
+
+  const [monitorStats, setMonitorStats] = useState();
+  const [fetchMonitorStats, { isLoading: isValidatingMonitorStats }] = useMutation(
+    () => api.monitor_stats?.detailAsync(
+      MonitorStatsEnum.PIPELINE_RUN_COUNT,
+      monitorStatsQueryParams,
+      {
+        signal: abortRef?.current?.signal,
+      },
+    ),
+    {
+      onSuccess: (response: any) => {
+        return onSuccess(
+          response,
+          {
+            callback: ({
+              monitor_stat: {
+                stats,
+              },
+            }) => {
+              setMonitorStats(stats);
+            },
+          },
+        );
+      },
+    },
   );
+
+  const setSelectedTab = useCallback((prev: TabType | ((tab: TabType) => TabType)) => {
+    if (abortRef?.current !== null) {
+      abortRef?.current?.abort();
+    }
+    abortRef.current = new AbortController();
+
+    setSelectedTabState((current: TabType) => {
+      const tab = typeof prev === 'function' ? prev(current) : prev;
+
+      if (current?.uuid !== tab?.uuid) {
+        goToWithQuery({ [TAB_URL_PARAM]: tab?.uuid }, { replaceParams: true });
+
+        fetchMonitorStats();
+      }
+
+      return tab;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!mountedRef?.current) {
+      mountedRef.current = true;
+      fetchMonitorStats();
+    }
+  }, []);
 
   const {
     data: dataPipelineRuns,
@@ -166,21 +207,14 @@ function OverviewPage() {
     streaming: streamingPipelineRuns = [],
   } = groupedPipelineRuns;
 
-  useEffect(() => {
-    if (selectedTabPrev && selectedTab?.uuid !== selectedTabPrev?.uuid) {
-      fetchMonitorStats();
-    }
-  }, [fetchMonitorStats, selectedTab, selectedTabPrev]);
-
   const dateRange = useMemo(() =>
     getDateRange(TIME_PERIOD_INTERVAL_MAPPING[timePeriod] + 1),
     [timePeriod],
     );
   const allPipelineRunData = useMemo(() => {
-    const monitorStats: RunCountStatsType = dataMonitor?.monitor_stat?.stats || {};
     return getAllPipelineRunDataGrouped(monitorStats, dateRange);
   }, [
-    dataMonitor?.monitor_stat?.stats,
+    monitorStats,
     dateRange,
   ]);
   const {
@@ -254,6 +288,18 @@ function OverviewPage() {
   ], {
     background: true,
     uuid: 'browse_templates',
+  });
+
+  const [showImportPipelineModal, hideImportPipelineModal] = useModal(() => (
+    <UploadPipeline
+      onCancel={hideImportPipelineModal}
+    />
+  ), {
+  }, [
+    ,
+  ], {
+    background: true,
+    uuid: 'import_pipeline',
   });
 
   const [showConfigureProjectModal, hideConfigureProjectModal] = useModal(({
@@ -333,6 +379,7 @@ function OverviewPage() {
   const newPipelineButtonMenuItems = useMemo(() => getNewPipelineButtonMenuItems(
     createPipeline,
     {
+      showImportPipelineModal,
       showAIModal: () => {
         if (!project?.openai_api_key) {
           showConfigureProjectModal({
@@ -352,6 +399,7 @@ function OverviewPage() {
     showAIModal,
     showBrowseTemplates,
     showConfigureProjectModal,
+    showImportPipelineModal,
   ]);
 
   const addButtonEl = useMemo(() => (
@@ -592,7 +640,7 @@ def d(df):
             </Spacing>
             <ButtonTabs
               onClickTab={({ uuid }) => {
-                goToWithQuery({ [TAB_URL_PARAM]: uuid }, { replaceParams: true });
+                setSelectedTab(() => allTabs.find(t => uuid === t.uuid));
               }}
               regularSizeText
               selectedTabUUID={timePeriod}
@@ -604,7 +652,7 @@ def d(df):
 
       {TAB_DASHBOARD.uuid === selectedTab?.uuid && (
         <BlockLayout
-          leftOffset={9 * UNIT}
+          leftOffset={VERTICAL_NAVIGATION_WIDTH - 1}
           pageBlockLayoutTemplate={pageBlockLayoutTemplate}
           topOffset={HEADER_HEIGHT + refSubheader?.current?.getBoundingClientRect()?.height}
           uuid="overview/dashboard"
@@ -639,7 +687,10 @@ def d(df):
               <Spacing ml={2}>
                 <FlexContainer alignItems="center">
                   <Text bold large>
-                    {isValidatingMonitorStats ? '--' : totalPipelineRunCount} total pipeline runs
+                    {isValidatingMonitorStats
+                      ? '--'
+                      : formatNumber(totalPipelineRunCount)
+                    } total pipeline runs
                   </Text>
                   {utcTooltipEl}
                 </FlexContainer>
@@ -700,6 +751,10 @@ def d(df):
   );
 }
 
-OverviewPage.getInitialProps = async () => ({});
+OverviewPage.getInitialProps = async (ctx) => {
+  return {
+    tab: (ctx?.query?.tab || TimePeriodEnum.TODAY) as TimePeriodEnum,
+  };
+};
 
 export default PrivateRoute(OverviewPage);

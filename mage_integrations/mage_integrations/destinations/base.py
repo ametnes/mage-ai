@@ -180,10 +180,6 @@ class Destination(ABC):
         return self.config.get(STREAM_OVERRIDE_SETTINGS_KEY, {})
 
     @abstractmethod
-    def export_batch_data(self, record_data: List[Dict], stream: str, tags: Dict = None) -> None:
-        raise NotImplementedError('Subclasses must implement the export_batch_data method.')
-
-    @abstractmethod
     def test_connection(self) -> None:
         raise NotImplementedError('Subclasses must implement the test_connection method.')
 
@@ -192,6 +188,9 @@ class Destination(ABC):
 
     def after_process(self) -> None:    # noqa: B027
         pass
+
+    def export_batch_data(self, record_data: List[Dict], stream: str, tags: Dict = None) -> None:
+        raise NotImplementedError('Subclasses must implement the export_batch_data method.')
 
     def export_data(
         self,
@@ -534,7 +533,7 @@ class Destination(ABC):
         self.logger.info('Process batch set started.', tags=tags)
 
         errors = []
-        stream_states = {}
+        stream_bookmarks = {}
         for stream, batches in batches_by_stream.items():
             record_data = batches['record_data']
 
@@ -554,15 +553,24 @@ class Destination(ABC):
 
                     states = batches['state_data']
                     if len(states) >= 1:
-                        stream_states[stream] = states[-1]
+                        merged_bookmarks = dict()
+                        # Merge the states record to one set of bookmarks
+                        for state in states:
+                            state_bookmarks = state['row'][KEY_VALUE]['bookmarks']
+                            for k, v in state_bookmarks.items():
+                                if k in merged_bookmarks and isinstance(v, dict) and \
+                                        isinstance(merged_bookmarks[k], dict):
+                                    merged_bookmarks[k] = merge_dict(merged_bookmarks[k], v)
+                                else:
+                                    merged_bookmarks[k] = v
+                        stream_bookmarks[stream] = merged_bookmarks
                 except Exception as err:
                     errors.append(err)
 
-        if len(stream_states.values()) >= 1:
+        if len(stream_bookmarks.values()) >= 1:
             bookmarks = {}
-            for state in stream_states.values():
-                bookmarks.update(state['row'][KEY_VALUE]['bookmarks'])
-
+            for bookmark in stream_bookmarks.values():
+                bookmarks.update(bookmark)
             state_data = dict(row={
                 KEY_VALUE: dict(bookmarks=bookmarks),
             })

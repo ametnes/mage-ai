@@ -6,7 +6,8 @@ from ldap3 import Connection, Server
 from ldap3.core.exceptions import LDAPException
 
 from mage_ai.data_preparation.repo_manager import get_repo_config
-from mage_ai.settings import (
+from mage_ai.settings import get_settings_value
+from mage_ai.settings.keys import (
     LDAP_AUTHENTICATION_FILTER,
     LDAP_AUTHORIZATION_FILTER,
     LDAP_BASE_DN,
@@ -21,7 +22,7 @@ from mage_ai.shared.hash import merge_dict
 
 class LDAPAuthenticator(ABC):
     @abstractmethod
-    def authenticate(self, username: str, password: str) -> Tuple[bool, str]:
+    def authenticate(self, username: str, password: str) -> Tuple[bool, str, Dict]:
         pass
 
     @abstractmethod
@@ -29,7 +30,7 @@ class LDAPAuthenticator(ABC):
         pass
 
     def verify(self, username: str, password: str) -> bool:
-        authenticated, user_dn = self.authenticate(username, password)
+        authenticated, user_dn, user_attributes = self.authenticate(username, password)
         if authenticated:
             return self.authorize(user_dn)
         return False
@@ -83,7 +84,7 @@ class LDAPConnection(LDAPAuthenticator):
                 attributes=[self.group_field] if self.group_field else None,
             )
             if not self.conn.entries:
-                return False, ""
+                return False, "", dict()
             user_dn = self.conn.entries[0].entry_dn
             user_attributes = self.conn.entries[0].entry_attributes_as_dict
             if self.conn.rebind(user=user_dn, password=password):
@@ -92,12 +93,12 @@ class LDAPConnection(LDAPAuthenticator):
         except LDAPException:
             return False, "", dict()
 
-    def authorize(self, user_dn: str) -> bool:
+    def authorize(self, username: str) -> bool:
         try:
             if not self.conn:
                 self.bind()
             self.conn.entries.clear()
-            self.conn.search(self.base_dn, self.authorization_filter.format(user_dn=user_dn))
+            self.conn.search(self.base_dn, self.authorization_filter.format(user_dn=username))
             if self.conn.entries:
                 if len(self.conn.entries) > 0:
                     return True
@@ -120,14 +121,23 @@ class LDAPConnection(LDAPAuthenticator):
 
 def new_ldap_connection() -> LDAPConnection:
     ldap_config_from_env_vars = dict(
-        server_url=LDAP_SERVER,
-        bind_dn=LDAP_BIND_DN,
-        bind_password=LDAP_BIND_PASSWORD,
-        base_dn=LDAP_BASE_DN,
-        authentication_filter=LDAP_AUTHENTICATION_FILTER,
-        authorization_filter=LDAP_AUTHORIZATION_FILTER,
-        group_field=LDAP_GROUP_FIELD,
-        roles_mapping=LDAP_ROLES_MAPPING,
+        server_url=get_settings_value(LDAP_SERVER, 'ldaps://127.0.0.1:1636'),
+        bind_dn=get_settings_value(LDAP_BIND_DN, 'cd=admin,dc=example,dc=org'),
+        bind_password=get_settings_value(LDAP_BIND_PASSWORD, 'admin_password'),
+        base_dn=get_settings_value(LDAP_BASE_DN, 'dc=example,dc=org'),
+        authentication_filter=get_settings_value(
+            LDAP_AUTHENTICATION_FILTER,
+            '(&(|(objectClass=Pers)(objectClass=gro))(cn={username}))'
+        ),
+        authorization_filter=get_settings_value(
+            LDAP_AUTHORIZATION_FILTER,
+            '(&(objectClass=groupOfNames)(cn=group)(member={user_dn}))'
+        ),
+        group_field=get_settings_value(
+            LDAP_GROUP_FIELD,
+            'memberOf',
+        ),
+        roles_mapping=get_settings_value(LDAP_ROLES_MAPPING),
     )
     try:
         ldap_config = get_repo_config().ldap_config

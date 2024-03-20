@@ -1,6 +1,6 @@
 import * as osPath from 'path';
+import { useCallback, useMemo, useState } from 'react';
 import { useGlobalState } from '@storage/state';
-import { useMemo, useState } from 'react';
 import { useMutation } from 'react-query';
 
 import BlockType from '@interfaces/BlockType';
@@ -11,21 +11,26 @@ import FileType, { FILE_EXTENSION_TO_LANGUAGE_MAPPING } from '@interfaces/FileTy
 import Flex from '@oracle/components/Flex';
 import FlexContainer from '@oracle/components/FlexContainer';
 import Headline from '@oracle/elements/Headline';
+import PipelineType from '@interfaces/PipelineType';
 import Spacing from '@oracle/elements/Spacing';
 import Spinner from '@oracle/components/Spinner';
 import Table from '@components/shared/Table';
 import Text from '@oracle/elements/Text';
 import api from '@api';
-import { PADDING_UNITS } from '@oracle/styles/units/spacing';
+import { PADDING_UNITS, UNIT } from '@oracle/styles/units/spacing';
 import { buildFileExtensionRegExp } from '@components/FileEditor/utils';
 import { dateFormatLongFromUnixTimestamp } from '@utils/date';
 import { isJsonString } from '@utils/string';
 import { onSuccess } from '@api/utils/response';
 import { pauseEvent } from '@utils/events';
 import { pushAtIndex } from '@utils/array';
+import { isObject, selectEntriesWithValues } from '@utils/hash';
 
 type FileVersionsProps = {
-  onActionCallback?: (file: FileType) => void;
+  onActionCallback?: (file: FileType, opts?: {
+    blockUUID: string;
+  }) => void;
+  pipeline?: PipelineType;
   selectedBlock?: BlockType;
   selectedFilePath?: string;
   setErrors: (errors: ErrorsType) => void;
@@ -34,14 +39,31 @@ type FileVersionsProps = {
 
 function FileVersions({
   onActionCallback,
+  pipeline,
   selectedBlock,
   selectedFilePath,
   setErrors,
   width,
 }: FileVersionsProps) {
   const [, setApiReloads] = useGlobalState('apiReloads');
+
+  const urlID = useMemo(() => selectedFilePath
+    ? encodeURIComponent(selectedFilePath)
+    : selectedBlock
+      ? encodeURIComponent(`${selectedBlock?.type}/${selectedBlock?.uuid}`)
+      : null,
+  [
+    selectedBlock,
+    selectedFilePath
+  ]);
+
   const { data: dataFileVersions1, mutate: fetchFileVersions1 } =
-    api.file_versions.files.list(selectedFilePath && encodeURIComponent(selectedFilePath));
+    api.file_versions.files.list(urlID,
+    selectEntriesWithValues({
+      block_uuid: selectedBlock?.uuid,
+      pipeline_uuid: pipeline?.uuid,
+    }),
+  );
   const fileVersions: FileType[] = useMemo(() => dataFileVersions1?.file_versions || [], [
     dataFileVersions1,
   ]);
@@ -61,13 +83,16 @@ function FileVersions({
   ]);
 
   const regex = useMemo(() => buildFileExtensionRegExp(), []);
-  const fileExtension = useMemo(() => selectedFilePath?.match(regex)?.[0]?.split('.')?.[1], [
+  const fileExtension = useMemo(() => ((typeof selectedFilePath !== 'string' && isObject(selectedFilePath))
+    ? (selectedFilePath as FileType)?.path || (selectedFilePath as FileType)?.name
+    : selectedFilePath
+  )?.match(regex)?.[0]?.split('.')?.[1], [
     selectedFilePath,
     regex,
   ]);
 
-  const [updateFile, { isLoading }] = useMutation(
-    api.file_contents.useUpdate(selectedFilePath && encodeURIComponent(selectedFilePath)),
+  const [updateFileOrig, { isLoading }] = useMutation(
+    api.file_contents.useUpdate(urlID),
     {
       onSuccess: (response: any) => onSuccess(
         response, {
@@ -93,7 +118,9 @@ function FileVersions({
             }));
 
             setSelectedFileVersionIndex(prev => prev + 1);
-            onActionCallback?.(resp?.file_content);
+            onActionCallback?.(resp?.file_content, {
+              blockUUID: selectedBlock?.uuid,
+            });
           },
           onErrorCallback: (response, errors) => setErrors({
             errors,
@@ -103,6 +130,33 @@ function FileVersions({
       ),
     },
   );
+
+  const updateFile = useCallback((data: {
+    version: string;
+  }) => {
+    const payload: {
+      block_uuid?: string;
+      pipeline_uuid?: string;
+      version: string;
+    } = {
+      ...data,
+    };
+
+    if (!selectedFilePath) {
+      payload.block_uuid = selectedBlock?.uuid;
+      payload.pipeline_uuid = pipeline?.uuid;
+    }
+
+    // @ts-ignore
+    return updateFileOrig({
+      file_content: payload,
+    });
+  }, [
+    pipeline,
+    selectedBlock,
+    selectedFilePath,
+    updateFileOrig,
+  ]);
 
   const rowsMemo = useMemo(() => {
     let arr = fileVersions.map((file: FileType) => {
@@ -132,9 +186,7 @@ function FileVersions({
                 pauseEvent(e);
                 // @ts-ignore
                 updateFile({
-                  file_content: {
-                    version: name,
-                  },
+                  version: name,
                 });
               }}
               small
@@ -153,13 +205,13 @@ function FileVersions({
         </Spacing>
       );
 
-      if (fileContent && fileContent?.path === selectedFileVersion?.path) {
+      if (fileContent && fileContent?.path?.includes(selectedFileVersion?.path)) {
         const { content = '' } = fileContent;
         el = (
           <CodeEditor
             autoHeight
             language={FILE_EXTENSION_TO_LANGUAGE_MAPPING[fileExtension]}
-            padding
+            padding={UNIT * 2}
             readOnly
             value={isJsonString(content)
               ? JSON.stringify(JSON.parse(content), null, 2)

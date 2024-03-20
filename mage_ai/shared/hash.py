@@ -4,6 +4,22 @@ import re
 from functools import reduce
 from typing import Any, Dict, List
 
+from mage_ai.shared.strings import camel_to_snake_case
+
+
+def camel_case_keys_to_snake_case(d):
+    if not isinstance(d, dict):
+        return d
+    snake_dict = {}
+    for key, value in d.items():
+        snake_key = camel_to_snake_case(key)
+        if isinstance(value, dict):
+            value = camel_case_keys_to_snake_case(value)
+        elif isinstance(value, list):
+            value = [camel_case_keys_to_snake_case(item) for item in value]
+        snake_dict[snake_key] = value
+    return snake_dict
+
 
 def dig(obj_arg, arr_or_string):
     if type(arr_or_string) is str:
@@ -22,6 +38,53 @@ def dig(obj_arg, arr_or_string):
             return obj.get(key)
         else:
             return obj
+
+    return reduce(_build, arr, obj_arg)
+
+
+def safe_dig(obj_arg, arr_or_string):
+    """
+    Safely retrieves nested values from a dictionary or list using a dot-separated path.
+
+    Args:
+        obj_arg: The object (dictionary or list) to navigate.
+        arr_or_string (str or list): A dot-separated path string or a list of
+            keys/indexes.
+
+    Returns:
+        The value retrieved from the nested structure, or None if any intermediate
+            key/index is missing or the object is None.
+    """
+    if isinstance(arr_or_string, str):
+        arr_or_string = arr_or_string.split('.')
+    arr = list(map(str.strip, arr_or_string))
+
+    def _build(obj, key):
+        # Return None if the object is None or not a dictionary
+        if obj is None or not isinstance(obj, dict) and not isinstance(obj, list):
+            return None
+
+        tup = re.split(r'\[(\d+)\]$', key)
+        if len(tup) >= 2:
+            key, index = filter(lambda x: x, tup)
+            index = int(index) if index else None
+            if key and index is not None:
+                if key not in obj:
+                    return None  # Return None if the key is not present
+                return (
+                    obj[key][index]
+                    if isinstance(obj[key], list) and len(obj[key]) > index
+                    else None
+                )
+            elif index is not None:
+                return (
+                    obj[index] if isinstance(obj, list) and len(obj) > index else None
+                )
+        elif isinstance(obj, dict):
+            return obj.get(key)
+        else:
+            return None
+
     return reduce(_build, arr, obj_arg)
 
 
@@ -77,6 +140,7 @@ def extract(d, keys, include_blank_values: bool = False):
         if include_blank_values or val is not None:
             obj[key] = val
         return obj
+
     return reduce(_build, keys, {})
 
 
@@ -95,6 +159,7 @@ def group_by(func, arr):
             obj[val] = []
         obj[val].append(item)
         return obj
+
     return reduce(_build, arr, {})
 
 
@@ -106,7 +171,7 @@ def index_by(func, arr):
     return obj
 
 
-def merge_dict(a, b):
+def merge_dict(a: Dict, b: Dict) -> Dict:
     if a:
         c = a.copy()
     else:
@@ -125,4 +190,34 @@ def replace_dict_nan_value(d):
         if isinstance(v, float) and math.isnan(v):
             return None
         return v
+
     return {k: _replace_nan_value(v) for k, v in d.items()}
+
+
+def get_safe_value(data: Dict, key: str, default_value):
+    return data.get(key, default_value) if data else default_value
+
+
+def set_value(obj: Dict, keys: List[str], value) -> Dict:
+    if len(keys) >= 2:
+        for idx in range(len(keys)):
+            keys_init = keys[:idx]
+            if len(keys_init) >= 1:
+                set_value(obj, keys_init, dig(obj, keys_init) or {})
+
+    results = dict(__obj_to_set_value=obj, __value=value)
+
+    key = ''.join(f"['{key}']" for key in keys)
+    expression = f'__obj_to_set_value{key} = __value'
+    exec(expression, results)
+
+    return results['__obj_to_set_value']
+
+
+def combine_into(child: Dict, parent: Dict) -> None:
+    # Child will merge into parent and override parent values.
+    for k, v in child.items():
+        if isinstance(v, dict):
+            combine_into(v, parent.setdefault(k, {}))
+        else:
+            parent[k] = v

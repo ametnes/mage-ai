@@ -199,11 +199,23 @@ class Api(Source):
             df = self._deal_with_google_sheets(response, separator, header)
             yield df.to_dict(orient='records')
 
+        elif checked_type == 'application/gzip':
+            df = polars.read_csv(BytesIO(response.content),
+                                 sepr=separator,
+                                 has_header=header,).to_pandas()
+            yield df.to_dict(orient='records')
+
         elif checked_type == 'application/json':
             result = response.json()
 
+            if result is None:
+                raise Exception('API response is None.')
+
             if response_parser:
                 result = dig(result, response_parser)
+
+                if result is None:
+                    raise Exception(f'API response with parser {response_parser} is None.')
 
             sample = None
             requires_columns = False

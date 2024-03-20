@@ -1,4 +1,6 @@
-import { useMemo, useState } from 'react';
+import NextLink from 'next/link';
+import { ThemeContext } from 'styled-components';
+import { useContext, useMemo, useState } from 'react';
 import { useMutation } from 'react-query';
 import { useRouter } from 'next/router';
 
@@ -19,11 +21,13 @@ import PipelineRunType, {
  } from '@interfaces/PipelineRunType';
 import PipelineScheduleType, {
   SCHEDULE_TYPE_TO_LABEL,
+  ScheduleIntervalEnum,
   ScheduleStatusEnum,
   ScheduleTypeEnum,
+  VARIABLE_BOOKMARK_VALUES_KEY,
 } from '@interfaces/PipelineScheduleType';
 import PipelineTriggerType from '@interfaces/PipelineTriggerType';
-import PipelineType from '@interfaces/PipelineType';
+import PipelineType, { PipelineTypeEnum } from '@interfaces/PipelineType';
 import PipelineVariableType, { GLOBAL_VARIABLES_UUID } from '@interfaces/PipelineVariableType';
 import Select from '@oracle/elements/Inputs/Select';
 import Spacing from '@oracle/elements/Spacing';
@@ -34,22 +38,25 @@ import Text from '@oracle/elements/Text';
 import Tooltip from '@oracle/components/Tooltip';
 import api from '@api';
 import buildTableSidekick, { TABS } from '@components/PipelineRun/shared/buildTableSidekick';
+import useProject from '@utils/models/project/useProject';
 import { BEFORE_WIDTH, BeforeStyle } from '@components/PipelineDetail/shared/index.style';
 import { BlockTypeEnum } from '@interfaces/BlockType';
 import {
   Alphabet,
   CalendarDate,
+  Edit,
   Info,
   Lightning,
+  LightningOff,
   MultiShare,
   MusicNotes,
-  Pause,
-  PlayButtonFilled,
+  Once,
   PlugAPI,
   Schedule,
   Sun,
   Switch,
 } from '@oracle/icons';
+import { ICON_SIZE_DEFAULT, ICON_SIZE_SMALL } from '@oracle/styles/units/icons';
 import { MAGE_VARIABLES_KEY } from '@interfaces/PipelineRunType';
 import {
   PADDING_UNITS,
@@ -70,6 +77,7 @@ import {
   getTriggerApiEndpoint,
 } from '../utils';
 import { dateFormatLong, datetimeInLocalTimezone } from '@utils/date';
+import { getColorsForBlockType } from '@components/CodeBlock/index.style';
 import { getModelAttributes } from '@utils/models/dbt';
 import { goToWithQuery } from '@utils/routing';
 import { indexBy } from '@utils/array';
@@ -99,17 +107,27 @@ function TriggerDetail({
   setErrors,
   variables,
 }: TriggerDetailProps) {
+  const themeContext = useContext(ThemeContext);
+
+  const {
+    project,
+  } = useProject();
   const router = useRouter();
   const isViewerRole = isViewer();
   const displayLocalTimezone = shouldDisplayLocalTimezone();
 
+  const blocksMapping =
+    useMemo(() => indexBy(pipeline?.blocks || [], ({ uuid }) => uuid), [pipeline]);
+
   const {
     uuid: pipelineUUID,
+    type: pipelineType,
   } = pipeline || {};
   const {
     description,
     id: pipelineScheduleID,
     event_matchers: eventMatchers,
+    last_enabled_at: lastEnabledAt,
     name: pipelineScheduleName,
     next_pipeline_run_date: nextRunDate,
     schedule_interval: scheduleInterval,
@@ -144,10 +162,12 @@ function TriggerDetail({
     mutate: fetchPipelineRuns,
   } = api.pipeline_runs.pipeline_schedules.list(
     pipelineScheduleID,
-    pipelineRunsRequestQuery, {
-    refreshInterval: 3000,
-    revalidateOnFocus: true,
-  });
+    pipelineRunsRequestQuery,
+    {
+      refreshInterval: 3000,
+      revalidateOnFocus: true,
+    },
+  );
   const pipelineRuns = useMemo(() => dataPipelineRuns?.pipeline_runs || [], [dataPipelineRuns]);
   const totalRuns = useMemo(() => dataPipelineRuns?.metadata?.count || [], [dataPipelineRuns]);
 
@@ -214,7 +234,7 @@ function TriggerDetail({
           callback: () => {
             fetchPipelineSchedule();
           },
-          onErrorCallback: (response, errors) => setErrors({
+          onErrorCallback: (response, errors) => setErrors?.({
             errors,
             response,
           }),
@@ -245,7 +265,24 @@ function TriggerDetail({
           callback: () => {
             fetchPipelineTriggers();
           },
-          onErrorCallback: (response, errors) => setErrors({
+          onErrorCallback: (response, errors) => setErrors?.({
+            errors,
+            response,
+          }),
+        },
+      ),
+    },
+  );
+
+  const [createPipelineRun, { isLoading: isLoadingCreatePipelineRun }]: any = useMutation(
+      api.pipeline_runs.pipeline_schedules.useCreate(pipelineScheduleID),
+    {
+      onSuccess: (response: any) => onSuccess(
+        response, {
+          callback: () => {
+            fetchPipelineRuns();
+          },
+          onErrorCallback: (response, errors) => setErrors?.({
             errors,
             response,
           }),
@@ -255,6 +292,11 @@ function TriggerDetail({
   );
 
   const isActive = useMemo(() => ScheduleStatusEnum.ACTIVE === status, [status]);
+  const disabledRunOnce = useMemo(() => !isActive
+    && !(scheduleType === ScheduleTypeEnum.TIME
+      && scheduleInterval === ScheduleIntervalEnum.ONCE),
+    [isActive, scheduleInterval, scheduleType],
+  );
 
   const detailsMemo = useMemo(() => {
     const iconProps = {
@@ -424,6 +466,30 @@ function TriggerDetail({
       ]);
     }
 
+    if (lastEnabledAt) {
+      rows.push([
+        <FlexContainer
+          alignItems="center"
+          key="trigger_last_enabled_at_label"
+        >
+          <CalendarDate {...iconProps} />
+          <Spacing mr={1} />
+          <Text default>
+            Last enabled at
+          </Text>
+        </FlexContainer>,
+        <Text
+          key="trigger_last_enabled_at"
+          monospace
+        >
+          {displayLocalTimezone
+            ? datetimeInLocalTimezone(lastEnabledAt, displayLocalTimezone)
+            : dateFormatLong(lastEnabledAt, { includeSeconds: true })
+          }
+        </Text>,
+      ]);
+    }
+
     if (ScheduleTypeEnum.API === scheduleType) {
       const url = getTriggerApiEndpoint(pipelineSchedule);
       rows.push([
@@ -447,7 +513,7 @@ function TriggerDetail({
         </CopyToClipboard>,
       ]);
     }
-    
+
     if (settings?.timeout) {
       const { time, unit } = convertSeconds(settings?.timeout);
       const finalUnit = time === 1 ? unit : `${unit}s`;
@@ -459,7 +525,7 @@ function TriggerDetail({
           <Tooltip
             default
             label="Timeout set for runs of this trigger"
-            size={UNIT*1.5}
+            size={ICON_SIZE_DEFAULT}
             widthFitContent
           />
           <Spacing mr={1} />
@@ -484,7 +550,7 @@ function TriggerDetail({
           <Tooltip
             default
             label="Skip current run if any previous runs are still in progress"
-            size={UNIT*1.5}
+            size={ICON_SIZE_DEFAULT}
             widthFitContent
           />
           <Spacing mr={1} />
@@ -509,7 +575,7 @@ function TriggerDetail({
           <Tooltip
             default
             label="Trigger runs will continue running blocks if other unrelated blocks fail"
-            size={UNIT*1.5}
+            size={ICON_SIZE_DEFAULT}
             widthFitContent
           />
           <Spacing mr={1} />
@@ -522,6 +588,31 @@ function TriggerDetail({
           monospace
         >
           {settings.allow_blocks_to_fail.toString()}
+        </Text>,
+      ]);
+    }
+    if (settings?.create_initial_pipeline_run) {
+      rows.push([
+        <FlexContainer
+          alignItems="center"
+          key="trigger_create_initial_pipeline_run"
+        >
+          <Tooltip
+            default
+            label="Create initial pipeline run if start date is before current execution period"
+            maxWidth={UNIT * 32}
+            size={ICON_SIZE_DEFAULT}
+          />
+          <Spacing mr={1} />
+          <Text default>
+            Create initial run
+          </Text>
+        </FlexContainer>,
+        <Text
+          key="trigger_create_initial_pipeline_run_label"
+          monospace
+        >
+          {settings.create_initial_pipeline_run?.toString()}
         </Text>,
       ]);
     }
@@ -553,7 +644,7 @@ function TriggerDetail({
 
     if (!isEmptyObject(scheduleVariables)) {
       Object.entries(scheduleVariables).forEach(([k, v]) => {
-        if (MAGE_VARIABLES_KEY !== k) {
+        if (![MAGE_VARIABLES_KEY, VARIABLE_BOOKMARK_VALUES_KEY].includes(k)) {
           arr.push({
             uuid: k,
             value: getFormattedVariable(v),
@@ -597,6 +688,88 @@ function TriggerDetail({
     scheduleType,
     scheduleVariables,
     variables,
+  ]);
+
+  const bookmarkValuesTable = useMemo(() => {
+    const bookmarkValues = scheduleVariables?.[VARIABLE_BOOKMARK_VALUES_KEY];
+
+    if (!bookmarkValues) {
+      return null;
+    }
+
+    return (
+      <>
+        {Object.entries(bookmarkValues || {}).map(([blockUUID, streams]) => {
+          const block = blocksMapping?.[blockUUID];
+
+          return (
+            <Spacing key={blockUUID} mt={1}>
+              <Spacing pb={1} px={PADDING_UNITS}>
+                <Text
+                  color={getColorsForBlockType(
+                    block?.type,
+                    {
+                      blockColor: block?.color,
+                      theme: themeContext,
+                    },
+                  ).accent}
+                  monospace
+                >
+                  {blockUUID}
+                </Text>
+              </Spacing>
+
+              <Divider light />
+
+              {Object.entries(streams || {})?.map(([streamID, keyValues], idx) => (
+                <div key={streamID}>
+                  <Table
+                    columnFlex={[null, 1]}
+                    rows={[
+                      [
+                        <Text
+                          default
+                          key={`stream_title_${idx}`}
+                          monospace
+                        >
+                          Stream
+                        </Text>,
+                        <Text
+                          key={`stream_id_${idx}`}
+                          monospace
+                          rightAligned
+                        >
+                          {streamID}
+                        </Text>,
+                      ],
+                    ].concat(Object.entries(keyValues || {}).map(([uuid, value]) => [
+                      <Text
+                        default
+                        key={`settings_variable_label_${uuid}`}
+                        monospace
+                      >
+                        {uuid}
+                      </Text>,
+                      <Text
+                        key={`settings_variable_${uuid}`}
+                        monospace
+                        rightAligned
+                      >
+                        {value}
+                      </Text>,
+                    ]))}
+                  />
+                </div>
+              ))}
+            </Spacing>
+          );
+        })}
+      </>
+    );
+  }, [
+    blocksMapping,
+    scheduleVariables,
+    themeContext,
   ]);
 
   const dbtSettingsTable = useMemo(() => {
@@ -708,6 +881,15 @@ function TriggerDetail({
     />
   ), [eventMatchers]);
 
+  const saveInCodeAutomaticallyToggled =
+    useMemo(() => typeof pipeline?.settings?.triggers?.save_in_code_automatically === 'undefined'
+      ? project?.pipelines?.settings?.triggers?.save_in_code_automatically
+      : pipeline?.settings?.triggers?.save_in_code_automatically,
+    [
+      pipeline,
+      project,
+    ]);
+
   return (
     <PipelineDetailPage
       afterHidden={!selectedRun}
@@ -776,6 +958,20 @@ function TriggerDetail({
             </Spacing>
           )}
 
+          {bookmarkValuesTable && (
+            <Spacing my={UNITS_BETWEEN_SECTIONS}>
+              <Spacing px={PADDING_UNITS}>
+                <Headline level={5}>
+                  Bookmark values
+                </Headline>
+              </Spacing>
+
+              <Divider light mt={1} short />
+
+              {bookmarkValuesTable}
+            </Spacing>
+          )}
+
           {dbtSettingsTable && (
             <Spacing my={UNITS_BETWEEN_SECTIONS}>
               <Spacing px={PADDING_UNITS}>
@@ -806,7 +1002,7 @@ function TriggerDetail({
                 />
               </Spacing>
             </Spacing>
-          )}
+          )}\
 
           <Spacing my={UNITS_BETWEEN_SECTIONS}>
             <Spacing px={PADDING_UNITS}>
@@ -816,39 +1012,61 @@ function TriggerDetail({
               </Headline>
 
               <Spacing mt={1}>
-                <Text default>
-                  Save or update the trigger and its settings in the
-                  pipeline’s metadata and version control the trigger using Git.
-                  For more information, please read the <Link
-                    href="https://docs.mage.ai/guides/triggers/configure-triggers-in-code"
-                    openNewWindow
-                  >
-                    documentation
-                  </Link>.
-                </Text>
-              </Spacing>
-
-              <Spacing mt={PADDING_UNITS}>
-                {!dataPipelineTriggers && <Spinner inverted />}
-                {dataPipelineTriggers && (
-                  <Button
-                    disabled={!pipelineSchedule?.id}
-                    loading={isLoadingCreatePipelineTrigger}
-                    onClick={() => {
-                      // @ts-ignore
-                      createPipelineTrigger({
-                        pipeline_trigger: {
-                          pipeline_schedule_id: pipelineSchedule?.id,
-                        },
-                      });
-                    }}
-                    secondary
-                  >
-                    {triggerExistsInCode && 'Update trigger in code'}
-                    {!triggerExistsInCode && 'Save trigger in code'}
-                  </Button>
+                {saveInCodeAutomaticallyToggled && (
+                  <Text default>
+                    This trigger will automatically be persisted in code.
+                    To change this behavior, update the <NextLink
+                      as={`/pipelines/${pipelineUUID}/settings`}
+                      href={'/pipelines/[pipeline]/settings'}
+                      passHref
+                    >
+                      <Link openNewWindow>pipeline’s settings</Link>
+                    </NextLink> or <NextLink
+                      as="/settings/workspace/preferences"
+                      href="/settings/workspace/preferences"
+                      passHref
+                    >
+                      <Link openNewWindow>project settings</Link>
+                    </NextLink>.
+                  </Text>
+                )}
+                {!saveInCodeAutomaticallyToggled && (
+                  <Text default>
+                    Save or update the trigger and its settings in the
+                    pipeline’s metadata and version control the trigger using Git.
+                    For more information, please read the <Link
+                      href="https://docs.mage.ai/guides/triggers/configure-triggers-in-code"
+                      openNewWindow
+                    >
+                      documentation
+                    </Link>.
+                  </Text>
                 )}
               </Spacing>
+
+              {!saveInCodeAutomaticallyToggled && (
+                <Spacing mt={PADDING_UNITS}>
+                  {!dataPipelineTriggers && <Spinner inverted />}
+                  {dataPipelineTriggers && (
+                    <Button
+                      disabled={!pipelineSchedule?.id}
+                      loading={isLoadingCreatePipelineTrigger}
+                      onClick={() => {
+                        // @ts-ignore
+                        createPipelineTrigger({
+                          pipeline_trigger: {
+                            pipeline_schedule_id: pipelineSchedule?.id,
+                          },
+                        });
+                      }}
+                      secondary
+                    >
+                      {triggerExistsInCode && 'Update trigger in code'}
+                      {!triggerExistsInCode && 'Save trigger in code'}
+                    </Button>
+                  )}
+                </Spacing>
+              )}
             </Spacing>
           </Spacing>
         </BeforeStyle>
@@ -885,11 +1103,11 @@ function TriggerDetail({
           <Button
             beforeIcon={isActive
               ?
-                <Pause size={2 * UNIT} />
+                <LightningOff size={ICON_SIZE_SMALL} />
               :
-                <PlayButtonFilled
+                <Lightning
                   inverted={!isViewerRole}
-                  size={2 * UNIT}
+                  size={ICON_SIZE_SMALL}
                 />
             }
             danger={isActive && !isViewerRole}
@@ -907,16 +1125,44 @@ function TriggerDetail({
             success={!isActive && !isViewerRole}
           >
             {isActive
-              ? 'Pause trigger'
-              : 'Start trigger'
+              ? 'Disable trigger'
+              : 'Enable trigger'
             }
           </Button>
 
           <Spacing mr={PADDING_UNITS} />
 
+          {pipelineType !== PipelineTypeEnum.STREAMING &&
+            <>
+              <Button
+                beforeIcon={<Once size={ICON_SIZE_SMALL} />}
+                disabled={disabledRunOnce}
+                loading={isLoadingCreatePipelineRun}
+                onClick={() => createPipelineRun({
+                  pipeline_run: {
+                    pipeline_schedule_id: pipelineScheduleID,
+                    pipeline_uuid: pipelineUUID,
+                    variables: scheduleVariables,
+                  },
+                })}
+                outline
+                title={disabledRunOnce
+                  ? 'Trigger must be enabled to run@once'
+                  : 'Manually run pipeline once immediately'
+                }
+              >
+                <Text disabled={disabledRunOnce}>
+                  Run@once
+                </Text>
+              </Button>
+              <Spacing mr={PADDING_UNITS} />
+            </>
+          }
+
           {!isViewerRole &&
             <>
               <Button
+                beforeIcon={<Edit size={ICON_SIZE_SMALL} />}
                 linkProps={{
                   as: `/pipelines/${pipelineUUID}/triggers/${pipelineScheduleID}/edit`,
                   href: '/pipelines/[pipeline]/triggers/[...slug]',

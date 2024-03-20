@@ -1,4 +1,5 @@
 import { dig } from '@utils/hash';
+import { isNumeric } from './string';
 
 export function insertAtIndex(item, idx, arr) {
   const copy1 = arr.slice(0, idx);
@@ -104,7 +105,7 @@ export function sortByKey(arr, sort, opts: any = {}) {
     ? val => absoluteValue ? Math.abs(dig(val, sort)) : dig(val, sort)
     : val => absoluteValue ? Math.abs(sort(val)) : sort(val);
 
-  return arr.sort((a, b) => {
+  return [...arr].sort((a, b) => {
     let sortingOrder = 0;
 
     if (sortingFunc(a) > sortingFunc(b)) {
@@ -218,7 +219,10 @@ export function arrayIncludesArray(arr1, arr2) {
 }
 
 export function range(numberOfItems) {
-  return Array(numberOfItems).fill(0);
+  if (isNumeric(numberOfItems) && numberOfItems >= 1) {
+    return Array(numberOfItems).fill(0);
+  }
+  return [];
 }
 
 export function rangeSequential(numberOfItems, startingIndex = 0) {

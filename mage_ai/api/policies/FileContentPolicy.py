@@ -28,9 +28,13 @@ FileContentPolicy.allow_read(FileContentPresenter.default_attributes + [], scope
 ], condition=lambda policy: policy.has_at_least_viewer_role())
 
 FileContentPolicy.allow_write([
+    'block_uuid',
     'content',
+    'modified_timestamp',
     'name',
     'path',
+    'pipeline_uuid',
+    'size',
     'version',
 ], scopes=[
     OauthScope.CLIENT_PRIVATE,

@@ -1,4 +1,3 @@
-import os
 import secrets
 from datetime import datetime, timedelta
 from typing import Dict
@@ -10,15 +9,15 @@ from mage_ai.orchestration.db.models.oauth import (
     Oauth2Application,
     User,
 )
-from mage_ai.settings import MAGE_ACCESS_TOKEN_EXPIRY_TIME
+from mage_ai.settings import JWT_SECRET, MAGE_ACCESS_TOKEN_EXPIRY_TIME
 
 JWT_ALGORITHM = 'HS256'
-JWT_SECRET = os.getenv('JWT_SECRET', 'materia')
 
 
 def generate_access_token(
     user: User,
     application: Oauth2Application = None,
+    refresh_token: str = None,
     token: str = None,
     duration: int = None,
 ) -> Oauth2AccessToken:
@@ -38,6 +37,9 @@ def generate_access_token(
         token=token,
         user_id=user.id if user else None,
     )
+
+    if refresh_token:
+        attributes_data['refresh_token'] = refresh_token
 
     if application:
         attributes_data['oauth2_application_id'] = application.id

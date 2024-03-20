@@ -68,6 +68,7 @@ function Branches({
     actionRemoteName,
     remotes,
   ]);
+
   const allBranches = useMemo(() => branches?.concat(selectedRemote?.refs || []) || [], [
     branches,
     selectedRemote,
@@ -96,6 +97,7 @@ function Branches({
         response, {
           callback: () => {
             fetchBranch();
+            window.location.reload();
           },
           onErrorCallback: (response, errors) => showError({
             errors,
@@ -186,11 +188,12 @@ function Branches({
                     onChange={e => changeGitBranch({
                       git_custom_branch: {
                         name: e.target.value,
+                        remote: actionRemoteName,
                       },
                     })}
                     value={branch?.name}
                   >
-                    {branch?.name && branches?.map(({ name }) => (
+                    {branch?.name && allBranches?.map(({ name }) => (
                       <option key={name} value={name}>
                         {name}
                       </option>
@@ -342,11 +345,11 @@ function Branches({
                   // @ts-ignore
                   actionGitBranch({
                     git_custom_branch: {
-                      action_type: actionName,
-                      message: actionMessage,
-                      [actionName]: {
+                      action_payload: {
                         base_branch: branchBase,
                       },
+                      action_type: actionName,
+                      message: actionMessage,
                     },
                   });
                 }
@@ -380,7 +383,7 @@ function Branches({
           <Button
             beforeIcon={<PaginateArrowLeft />}
             linkProps={{
-              href: `/version-control?tab=${TAB_REMOTE.uuid}`,
+              href: `/version-control?tab=${encodeURIComponent(TAB_REMOTE.uuid)}`,
             }}
             noBackground
             noHoverUnderline

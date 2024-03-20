@@ -32,16 +32,21 @@ import TriggerEdit from '@components/Triggers/Edit';
 import Toolbar from '@components/shared/Table/Toolbar';
 import TriggersTable from '@components/Triggers/Table';
 import api from '@api';
-import { GLOBAL_VARIABLES_UUID } from '@interfaces/PipelineVariableType';
-import { Interactions as InteractionsIcon } from '@oracle/icons';
-import { PADDING_UNITS } from '@oracle/styles/units/spacing';
+import {
+  ContainerStyle as RuntimeVariablesContainerStyle,
+} from '@components/RuntimeVariables/index.style';
+import { ICON_SIZE_SMALL } from '@oracle/styles/units/icons';
+import {
+  Interactions as InteractionsIcon,
+  Once,
+} from '@oracle/icons';
 import { PageNameEnum } from '@components/PipelineDetailPage/constants';
 import { SHARED_BUTTON_PROPS } from '@components/shared/AddButton';
 import { VerticalDividerStyle } from '@oracle/elements/Divider/index.style';
 import { capitalize, randomNameGenerator } from '@utils/string';
 import { dateFormatLong } from '@utils/date';
 import { filterQuery, queryFromUrl, queryString } from '@utils/url';
-import { getFormattedVariables } from '@components/Sidekick/utils';
+import { getFormattedGlobalVariables } from '@components/Sidekick/utils';
 import { getPipelineScheduleApiFilterQuery } from '@components/Triggers/utils';
 import { indexBy, sortByKey } from '@utils/array';
 import { isEmptyObject } from '@utils/hash';
@@ -57,11 +62,19 @@ type PipelineSchedulesProp = {
 };
 
 function PipelineSchedules({
-  pipeline,
+  pipeline: pipelineProp,
 }: PipelineSchedulesProp) {
   const router = useRouter();
   const isViewerRole = isViewer();
-  const pipelineUUID = pipeline.uuid;
+  const pipelineUUID = pipelineProp.uuid;
+
+  const { data } = api.pipelines.detail(pipelineUUID, {
+    includes_outputs: false,
+  }, {
+    revalidateOnFocus: false,
+  });
+  const pipeline = useMemo(() => data?.pipeline || pipelineProp, [data?.pipeline, pipelineProp]);
+
   const [errors, setErrors] = useState<ErrorsType>(null);
   const [triggerErrors, setTriggerErrors] = useState<ErrorsType>(null);
   const [isCreatingTrigger, setIsCreatingTrigger] = useState<boolean>(false);
@@ -157,15 +170,9 @@ function PipelineSchedules({
   const [createOnceSchedule, { isLoading: isLoadingCreateOnceSchedule }]: any =
     useCreateScheduleMutation(fetchPipelineSchedules);
 
-  const variablesOrig = useMemo(() => (
-    getFormattedVariables(
-      globalVariables,
-      block => block.uuid === GLOBAL_VARIABLES_UUID,
-    )?.reduce((acc, { uuid, value }) => ({
-      ...acc,
-      [uuid]: value,
-    }), {})
-  ), [globalVariables]);
+  const variablesOrig = useMemo(() => getFormattedGlobalVariables(globalVariables), [
+    globalVariables,
+  ]);
 
   const randomTriggerName = randomNameGenerator();
   const pipelineOnceSchedulePayload = useMemo(() => ({
@@ -183,11 +190,13 @@ function PipelineSchedules({
       initialPipelineSchedulePayload={pipelineOnceSchedulePayload}
       onCancel={hideModal}
       onSuccess={createOnceSchedule}
+      pipeline={pipeline}
       variables={variablesOrig}
     />
   ), {
   }, [
     globalVariables,
+    pipeline,
     variablesOrig,
   ], {
     background: true,
@@ -222,19 +231,24 @@ function PipelineSchedules({
         <>
           <DependencyGraph
             {...props}
+            enablePorts={false}
             height={dependencyGraphHeight}
             noStatus
           />
           {hasVariables && (
             <RuntimeVariables
-              height={runtimeVariablesHeight}
+              height={runtimeVariablesHeight + 1}
               scheduleType={selectedSchedule?.schedule_type}
               variables={variablesOrig}
               variablesOverride={variablesOverride}
             />
           )}
           {!hasVariables && (
-            <Spacing p={PADDING_UNITS}>
+            <RuntimeVariablesContainerStyle
+              height={runtimeVariablesHeight + 1}
+              includePadding
+              overflow
+            >
               <Text>
                 This pipeline has no runtime variables.
               </Text>
@@ -254,7 +268,7 @@ function PipelineSchedules({
                   </Text>
                 </Spacing>
               }
-            </Spacing>
+            </RuntimeVariablesContainerStyle>
           )}
         </>
       );
@@ -300,7 +314,6 @@ function PipelineSchedules({
 
   const {
     data: dataPipelineInteraction,
-    mutate: fetchPipelineInteraction,
   } = api.pipeline_interactions.detail(
     isInteractionsEnabled && pipelineUUID,
     {
@@ -310,7 +323,6 @@ function PipelineSchedules({
 
   const {
     data: dataInteractions,
-    mutate: fetchInteractions,
   } = api.interactions.pipeline_interactions.list(isInteractionsEnabled && pipelineUUID);
 
   const { data: dataPipeline } = api.pipelines.detail(isInteractionsEnabled && pipelineUUID);
@@ -390,14 +402,11 @@ function PipelineSchedules({
       query={query}
       resetPageOnFilterApply
       secondaryButtonProps={!isCreateDisabled && {
+        beforeIcon: <Once size={ICON_SIZE_SMALL} />,
         disabled: isViewerRole,
         isLoading: isLoadingCreateOnceSchedule,
-        label: 'Run @once',
-        onClick: isEmptyObject(variablesOrig)
-          ? () => createOnceSchedule({
-            pipeline_schedule: pipelineOnceSchedulePayload,
-          })
-          : showModal,
+        label: 'Run@once',
+        onClick: showModal,
         tooltip: 'Creates an @once trigger and runs pipeline immediately',
       }}
       showDivider={!isCreateDisabled}
@@ -406,19 +415,16 @@ function PipelineSchedules({
     </Toolbar>
   ), [
     createNewSchedule,
-    createOnceSchedule,
     isCreateDisabled,
     isLoadingCreateNewSchedule,
     isLoadingCreateOnceSchedule,
     isViewerRole,
     newTriggerFromInteractionsButtonMemo,
-    pipelineOnceSchedulePayload,
     pipelineUUID,
     query,
     router,
     showModal,
     tags,
-    variablesOrig,
   ]);
 
   const breadcrumbs = useMemo(() => {
@@ -449,12 +455,11 @@ function PipelineSchedules({
 
   if (isCreatingTrigger) {
     return (
-       <TriggerEdit
+      <TriggerEdit
         creatingWithLimitation
         errors={errors}
         onCancel={() => setIsCreatingTrigger(false)}
         pipeline={dataPipeline?.pipeline}
-        project={project}
         setErrors={setErrors}
         useCreateScheduleMutation={useCreateScheduleMutation}
       />

@@ -7,12 +7,18 @@ from faker import Faker
 from pandas.testing import assert_frame_equal
 
 # from mage_ai.data_cleaner.column_types.constants import ColumnType
-from mage_ai.data_preparation.models.block import Block, BlockType
+from mage_ai.data_preparation.models.block import Block, BlockType, CallbackBlock
 from mage_ai.data_preparation.models.block.errors import HasDownstreamDependencies
 from mage_ai.data_preparation.models.pipeline import Pipeline
 from mage_ai.data_preparation.repo_manager import get_repo_config
 from mage_ai.data_preparation.variable_manager import VariableManager
+from mage_ai.shared.path_fixer import add_root_repo_path_to_relative_path
 from mage_ai.tests.base_test import DBTestCase
+from mage_ai.tests.factory import (
+    create_integration_pipeline_with_blocks,
+    create_pipeline,
+)
+from mage_ai.tests.shared.mixins import ProjectPlatformMixin
 
 
 class BlockTest(DBTestCase):
@@ -74,16 +80,14 @@ def remove_duplicate_rows(df):
             'output_0',
             variable_type='dataframe'
         )
-        analysis = variable_manager.get_variable(
-            pipeline.uuid,
-            block2.uuid,
-            'output_0',
-            variable_type='dataframe_analysis',
-        )
+        # analysis = variable_manager.get_variable(
+        #     pipeline.uuid,
+        #     block2.uuid,
+        #     'output_0',
+        #     variable_type='dataframe_analysis',
+        # )
         df_final = pd.DataFrame({'col1': [1, 1, 3], 'col2': [2, 2, 4]}).drop_duplicates()
         assert_frame_equal(data, df_final)
-
-        analysis
         # TODO (Xiaoyou Wang): uncomment this one serialization of block output is fixed.
         # self.assertEqual(
         #     analysis['metadata']['column_types'],
@@ -91,6 +95,62 @@ def remove_duplicate_rows(df):
         # )
         # self.assertTrue(len(analysis['statistics']) > 0)
         # self.assertTrue(len(analysis['insights']) > 0)
+
+    def test_execute_with_preprocessers(self):
+        pipeline = Pipeline.create(
+            'test pipeline preprocessers',
+            repo_path=self.repo_path,
+        )
+        block1 = Block.create('test_data_loader', 'data_loader', self.repo_path, pipeline=pipeline)
+        block2 = Block.create(
+            'test_transformer',
+            'transformer',
+            self.repo_path,
+            pipeline=pipeline,
+            upstream_block_uuids=['test_data_loader'],
+        )
+        with open(block1.file_path, 'w') as file:
+            file.write('''import pandas as pd
+@preprocesser
+def preprocesser0(*args, **kwargs):
+    kwargs['context']['count'] = 1
+
+
+@preprocesser
+def preprocesser1(*args, **kwargs):
+    kwargs['context']['count'] = kwargs['context']['count'] + 1
+
+
+@data_loader
+def load_data(**kwargs):
+    count = kwargs['context']['count']
+
+    data = {'col1': [i * count for i in [1, 1, 3]], 'col2': [i * count for i in [2, 2, 4]]}
+    df = pd.DataFrame(data)
+    return [df]
+            ''')
+        with open(block2.file_path, 'w') as file:
+            file.write('''import pandas as pd
+@transformer
+def remove_duplicate_rows(df):
+    df_transformed = df.drop_duplicates()
+    return [df_transformed]
+            ''')
+        asyncio.run(block1.execute())
+        asyncio.run(block2.execute())
+
+        variable_manager = VariableManager(
+            variables_dir=get_repo_config(self.repo_path).variables_dir,
+        )
+        data = variable_manager.get_variable(
+            pipeline.uuid,
+            block2.uuid,
+            'output_0',
+            variable_type='dataframe'
+        )
+
+        df_final = pd.DataFrame({'col1': [2, 2, 6], 'col2': [4, 4, 8]}).drop_duplicates()
+        assert_frame_equal(data, df_final)
 
     def test_execute_dicts_and_lists(self):
         pipeline = Pipeline.create(
@@ -651,3 +711,92 @@ def test_output(output, *args) -> None:
             block3.upstream_block_uuids[1],
             'test_data_loader_1',
         )
+
+    def test_output_variables_for_integration_pipeline_blocks(self):
+        pipeline = create_integration_pipeline_with_blocks(
+            'test integration pipeline',
+            repo_path=self.repo_path,
+        )
+        block = pipeline.get_block('test_integration_source')
+
+        df = pd.DataFrame(
+            [
+                [1, 'abc@xyz.com', '32132'],
+                [2, 'abc2@xyz.com', '12345'],
+                [3, 'test', '1234'],
+                [4, 'abc@test.net', 'abcde'],
+                [5, 'abc12345@', '54321'],
+                [6, 'abcdef@123.com', '56789'],
+            ],
+            columns=['id', 'email', 'zip_code'],
+        )
+
+        block.store_variables({
+            'output_sample_data_stream1': df
+        })
+        output_variables = block.output_variables()
+        self.assertTrue('output_sample_data_stream1' in output_variables)
+
+    def test_file_path(self):
+        block = Block.create('test_transformer', 'transformer', self.repo_path)
+        self.assertEqual(block.file_path, os.path.join(
+            self.repo_path,
+            'transformers',
+            f'{block.uuid}.py',
+        ))
+
+
+class BlockProjectPlatformTests(ProjectPlatformMixin):
+    def test_file_path(self):
+        path = os.path.join('mage_platform', 'transformers', 'test_transformer.py')
+
+        with patch(
+            'mage_ai.data_preparation.models.block.project_platform_activated',
+            lambda: True,
+        ):
+            with patch(
+                'mage_ai.data_preparation.models.block.platform.mixins.project_platform_activated',
+                lambda: True,
+            ):
+                block = Block.create(
+                    'test_transformer',
+                    'transformer',
+                    self.repo_path,
+                    configuration=dict(file_source=dict(path=path))
+                )
+
+                self.assertEqual(block.file_path, add_root_repo_path_to_relative_path(path))
+
+
+class CallbackBlockTest(DBTestCase):
+    def setUp(self):
+        self.pipeline = create_pipeline('callback_pipeline', self.repo_path)
+
+    def tearDown(self):
+        self.pipeline.delete()
+
+    def test_create_global_vars_from_parent_block(self):
+        parent_block = Block.create(
+            'test_data_loader',
+            'data_loader',
+            self.repo_path,
+            pipeline=self.pipeline,
+        )
+        callback_block = CallbackBlock.create(parent_block.name)
+        self.pipeline.add_block(callback_block)
+        parent_block = parent_block.update(
+            dict(callback_blocks=[callback_block.uuid])
+        )
+        parent_block.global_vars = dict(
+            configuration=dict(table_name='load_data_table')
+        )
+
+        global_vars = dict(
+            random_var=1,
+        )
+        new_vars = callback_block._create_global_vars(
+            global_vars,
+            parent_block=parent_block,
+        )
+
+        self.assertIsNotNone(new_vars.get('configuration'))

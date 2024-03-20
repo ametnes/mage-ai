@@ -10,20 +10,23 @@ import FlexContainer, {
 import Headline from '@oracle/elements/Headline';
 import Link from '@oracle/elements/Link';
 import Panel from '@oracle/components/Panel';
-import ProjectType, { FeatureUUIDEnum } from '@interfaces/ProjectType';
+import ProjectType, { FeatureUUIDEnum, ProjectPipelinesType } from '@interfaces/ProjectType';
+import SetupSection, { SetupSectionRow } from '@components/shared/SetupSection';
 import Spacing from '@oracle/elements/Spacing';
 import Text from '@oracle/elements/Text';
 import TextInput from '@oracle/elements/Inputs/TextInput';
 import ToggleSwitch from '@oracle/elements/Inputs/ToggleSwitch';
 import Tooltip from '@oracle/components/Tooltip';
 import api from '@api';
+import useProject from '@utils/models/project/useProject';
 import { ContainerStyle } from './index.style';
 import { Edit } from '@oracle/icons';
-import { ICON_SIZE_MEDIUM, ICON_SIZE_SMALL } from '@oracle/styles/units/icons';
+import { ICON_SIZE_SMALL } from '@oracle/styles/units/icons';
+import { LOCAL_TIMEZONE_TOOLTIP_PROPS, storeLocalTimezoneSetting } from './utils';
 import { PADDING_UNITS, UNITS_BETWEEN_SECTIONS } from '@oracle/styles/units/spacing';
 import { capitalizeRemoveUnderscoreLower } from '@utils/string';
+import { ignoreKeys } from '@utils/hash';
 import { onSuccess } from '@api/utils/response';
-import { storeLocalTimezoneSetting } from './utils';
 import { useError } from '@context/Error';
 
 type PreferencesProps = {
@@ -32,6 +35,7 @@ type PreferencesProps = {
   header?: any;
   onCancel?: () => void;
   onSaveSuccess?: (project: ProjectType) => void;
+  rootProject?: boolean;
 };
 
 function Preferences({
@@ -40,6 +44,7 @@ function Preferences({
   header,
   onCancel,
   onSaveSuccess,
+  rootProject: rootProjectUse,
 }: PreferencesProps) {
   const [showError] = useError(null, {}, [], {
     uuid: 'settings/workspace/preferences',
@@ -47,8 +52,19 @@ function Preferences({
   const [projectAttributes, setProjectAttributes] = useState<ProjectType>(null);
   const [editingOpenAIKey, setEditingOpenAIKey] = useState<boolean>(false);
 
-  const { data, mutate: fetchProjects } = api.projects.list();
-  const project: ProjectType = useMemo(() => data?.projects?.[0], [data]);
+  const {
+    fetchProjects,
+    project: projectInit,
+    projectPlatformActivated,
+    rootProject,
+  } = useProject();
+
+  const project = useMemo(() => rootProjectUse ? rootProject : projectInit, [
+    projectInit,
+    rootProject,
+    rootProjectUse,
+  ]);
+
   const {
     name: projectName,
     openai_api_key: openaiApiKey,
@@ -89,15 +105,23 @@ function Preferences({
       ),
     },
   );
+
   const updateProject = useCallback((payload: {
     features?: {
       [key: string]: boolean;
     };
     help_improve_mage?: boolean;
     openai_api_key?: string;
+    pipelines?: ProjectPipelinesType;
   }) => updateProjectBase({
-    project: payload,
-  }), [updateProjectBase]);
+    project: {
+      ...payload,
+      root_project: rootProjectUse,
+    },
+  }), [
+    rootProjectUse,
+    updateProjectBase,
+  ]);
 
   const el = (
     <>
@@ -192,6 +216,36 @@ function Preferences({
 
       <Spacing mt={UNITS_BETWEEN_SECTIONS} />
 
+      <SetupSection
+        description="Global settings that are applied to all pipelines in this project."
+        title="Pipeline settings"
+      >
+        <SetupSectionRow
+          description="Every time a trigger is created or updated in this pipeline, automatically persist it in code."
+          title="Save triggers in code automatically"
+          toggleSwitch={{
+            checked: !!projectAttributes?.pipelines?.settings?.triggers?.save_in_code_automatically,
+            onCheck: (valFunc: (val: boolean) => boolean) => setProjectAttributes(prev => ({
+              ...prev,
+              pipelines: {
+                ...prev?.pipelines,
+                settings: {
+                  ...prev?.pipelines?.settings,
+                  triggers: {
+                    ...prev?.pipelines?.settings?.triggers,
+                    save_in_code_automatically: valFunc(
+                      prev?.pipelines?.settings?.triggers?.save_in_code_automatically,
+                    ),
+                  },
+                },
+              },
+            })),
+          }}
+        />
+      </SetupSection>
+
+      <Spacing mt={UNITS_BETWEEN_SECTIONS} />
+
       <Panel noPadding overflowVisible>
         <Spacing p={PADDING_UNITS}>
           <Spacing mb={1}>
@@ -200,51 +254,62 @@ function Preferences({
             </Headline>
           </Spacing>
 
-          {Object.entries(projectAttributes?.features || {}).map(([k, v], idx) => (
-            <Spacing
-              key={k}
-              mt={idx === 0 ? 0 : 1}
-            >
-              <FlexContainer
-                alignItems="center"
+          {Object.entries(ignoreKeys(projectAttributes?.features, [
+            {/*FeatureUUIDEnum.GLOBAL_HOOKS,*/}
+          ]) || {}).map(([k, v], idx) => {
+            const overrideFromRootProject = projectPlatformActivated
+              && !rootProjectUse
+              && project?.features_override
+              && k in project?.features_override;
+
+            return (
+              <Spacing
+                key={k}
+                mt={idx === 0 ? 0 : 1}
               >
-                <ToggleSwitch
-                  checked={!!v}
-                  compact
-                  onCheck={() => setProjectAttributes(prev => ({
-                    ...prev,
-                    features: {
-                      ...projectAttributes?.features,
-                      [k]: !v,
-                    },
-                  }))}
-                />
+                <FlexContainer
+                  alignItems="center"
+                >
+                  <Flex flex={1}>
+                    <ToggleSwitch
+                      disabled={overrideFromRootProject}
+                      checked={!!v}
+                      compact
+                      onCheck={() => setProjectAttributes(prev => ({
+                        ...prev,
+                        features: {
+                          ...projectAttributes?.features,
+                          [k]: !v,
+                        },
+                      }))}
+                    />
 
-                <Spacing mr={PADDING_UNITS} />
+                    <Spacing mr={PADDING_UNITS} />
 
-                <Flex>
-                  <Text default={!v} monospace>
-                    {capitalizeRemoveUnderscoreLower(k)}
-                  </Text>
+                    <Flex>
+                      <Text default={!v} monospace>
+                        {capitalizeRemoveUnderscoreLower(k)}
+                      </Text>
 
-                  {k === FeatureUUIDEnum.LOCAL_TIMEZONE &&
-                    <Spacing ml={1}>
-                      <Tooltip
-                        block
-                        description="Display dates in local timezone. Please note that certain pages
-                          (e.g. Monitor page) or components (e.g. Pipeline run bar charts) may still
-                          be in UTC time. Dates in local time will have a timezone offset in the
-                          timestamp (e.g. -07:00)."
-                        lightBackground
-                        muted
-                        size={ICON_SIZE_MEDIUM}
-                      />
-                    </Spacing>
-                  }
-                </Flex>
-              </FlexContainer>
-            </Spacing>
-          ))}
+                      {k === FeatureUUIDEnum.LOCAL_TIMEZONE &&
+                        <Spacing ml={1}>
+                          <Tooltip
+                            {...LOCAL_TIMEZONE_TOOLTIP_PROPS}
+                          />
+                        </Spacing>
+                      }
+                    </Flex>
+                  </Flex>
+
+                  {overrideFromRootProject && (
+                    <Text monospace muted small>
+                      overridden
+                    </Text>
+                  )}
+                </FlexContainer>
+              </Spacing>
+            );
+          })}
         </Spacing>
       </Panel>
 
@@ -294,12 +359,14 @@ function Preferences({
 
       <FlexContainer alignItems="center">
         <Button
+          id="save-project-settings"
           loading={isLoadingUpdateProject}
           onClick={() => {
             updateProject({
               features: projectAttributes?.features,
               help_improve_mage: projectAttributes?.help_improve_mage,
               openai_api_key: projectAttributes?.openai_api_key,
+              pipelines: projectAttributes?.pipelines,
             });
           }}
           primary

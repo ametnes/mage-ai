@@ -5,28 +5,36 @@ import BackfillType, {
   BACKFILL_TYPE_CODE,
 } from '@interfaces/BackfillType';
 import Button from '@oracle/elements/Button';
+import FlexContainer from '@oracle/components/FlexContainer';
 import Link from '@oracle/elements/Link';
 import Table, { ColumnType } from '@components/shared/Table';
 import Text from '@oracle/elements/Text';
+import api from '@api';
+import useDeleteConfirmDialogue from '@components/shared/Table/useDeleteConfirmDialogue';
 import { Edit } from '@oracle/icons';
 import { RunStatus } from '@interfaces/PipelineRunType';
-import { TIMEZONE_TOOLTIP_PROPS } from '@components/shared/Table/constants';
+import {
+  TIMEZONE_TOOLTIP_PROPS,
+  getRunStatusTextProps,
+} from '@components/shared/Table/constants';
 import { UNIT } from '@oracle/styles/units/spacing';
-import { datetimeInLocalTimezone, utcStringToElapsedTime } from '@utils/date';
-import { getTimeInUTCString } from '@components/Triggers/utils';
+import { displayLocalOrUtcTime } from '@components/Triggers/utils';
 import { isViewer } from '@utils/session';
 import { shouldDisplayLocalTimezone } from '@components/settings/workspace/utils';
+import { utcStringToElapsedTime } from '@utils/date';
 
 type BackfillsTableProps = {
+  fetchBackfills: () => void;
   pipeline: {
     uuid: string;
   };
   models: BackfillType[];
-  onClickRow: (backfill: BackfillType) => void;
+  onClickRow?: (backfill: BackfillType) => void;
   selectedRow?: BackfillType;
 };
 
 function BackfillsTable({
+  fetchBackfills,
   models,
   onClickRow,
   pipeline,
@@ -36,6 +44,14 @@ function BackfillsTable({
   const displayLocalTimezone = shouldDisplayLocalTimezone();
   const pipelineUUID = pipeline?.uuid;
   const timezoneTooltipProps = displayLocalTimezone ? TIMEZONE_TOOLTIP_PROPS : {};
+
+  const { deleteButton } = useDeleteConfirmDialogue({
+    fetchItems: fetchBackfills,
+    mutationFn: api.backfills.useDelete,
+    path: 'backfills',
+    pipelineUUID,
+  });
+
   const columnFlex = [null, 1, null, null, null, 1, 1, null];
   const columns: ColumnType[] = [
     {
@@ -66,7 +82,7 @@ function BackfillsTable({
   if (!isViewerRole) {
     columns.push({
       label: () => '',
-      uuid: 'edit',
+      uuid: 'edit_delete_backfill',
     });
   }
 
@@ -75,7 +91,7 @@ function BackfillsTable({
       columnFlex={columnFlex}
       columns={columns}
       isSelectedRow={(rowIndex: number) => models[rowIndex].id === selectedRow?.id}
-      onClickRow={(rowIndex: number) => onClickRow(models[rowIndex])}
+      onClickRow={(rowIndex: number) => onClickRow?.(models[rowIndex])}
       rows={models.map(({
         block_uuid: blockUUID,
         completed_at: completedAt,
@@ -88,7 +104,12 @@ function BackfillsTable({
         total_run_count: totalRunCount,
       }, idx) => {
         const arr = [
-          <Text default key="status" monospace>{status || 'inactive'}</Text>,
+          <Text
+            {...getRunStatusTextProps(status)}
+            key="status"
+          >
+            {status || 'inactive'}
+          </Text>,
           <NextLink
             as={`/pipelines/${pipelineUUID}/backfills/${id}`}
             href={'/pipelines/[pipeline]/backfills/[...slug]'}
@@ -106,15 +127,9 @@ function BackfillsTable({
           <Text default key="backfill" monospace small>
             {(startDatetime && endDatetime) && (
               <>
-                {displayLocalTimezone
-                  ? datetimeInLocalTimezone(startDatetime, displayLocalTimezone)
-                  : getTimeInUTCString(startDatetime)
-                }
+                {displayLocalOrUtcTime(startDatetime, displayLocalTimezone)}
                 &nbsp;-&nbsp;
-                {displayLocalTimezone
-                  ? datetimeInLocalTimezone(endDatetime, displayLocalTimezone)
-                  : getTimeInUTCString(endDatetime)
-                }
+                {displayLocalOrUtcTime(endDatetime, displayLocalTimezone)}
               </>
             )}
             {!(startDatetime && endDatetime) && <>&#8212;</>}
@@ -127,12 +142,8 @@ function BackfillsTable({
             title={startedAt ? utcStringToElapsedTime(startedAt) : null}
           >
             {startedAt
-              ? (displayLocalTimezone
-                ? datetimeInLocalTimezone(startedAt, displayLocalTimezone)
-                : getTimeInUTCString(startedAt)
-              ): (
-                <>&#8212;</>
-              )
+              ? displayLocalOrUtcTime(startedAt, displayLocalTimezone)
+              : <>&#8212;</>
             }
           </Text>,
           <Text
@@ -143,31 +154,34 @@ function BackfillsTable({
             title={completedAt ? utcStringToElapsedTime(completedAt) : null}
           >
             {completedAt
-              ? (displayLocalTimezone
-                ? datetimeInLocalTimezone(completedAt, displayLocalTimezone)
-                : getTimeInUTCString(completedAt)
-              ): (
-                <>&#8212;</>
-              )
+              ? displayLocalOrUtcTime(completedAt, displayLocalTimezone)
+              : <>&#8212;</>
             }
           </Text>,
         ];
         if (!isViewerRole) {
           arr.push(
-            <Button
-              default
-              disabled={status === RunStatus.COMPLETED}
-              iconOnly
-              key={`${idx}_edit_button`}
-              linkProps={{
-                as: `/pipelines/${pipelineUUID}/backfills/${id}/edit`,
-                href: '/pipelines/[pipeline]/backfills/[...slug]',
-              }}
-              noBackground
-              title="Edit"
-            >
-              <Edit default size={2 * UNIT} />
-            </Button>,
+            <FlexContainer key={`edit_delete_backfill_${idx}`}>
+              <Button
+                default
+                disabled={status === RunStatus.COMPLETED}
+                iconOnly
+                key={`${idx}_edit_button`}
+                linkProps={{
+                  as: `/pipelines/${pipelineUUID}/backfills/${id}/edit`,
+                  href: '/pipelines/[pipeline]/backfills/[...slug]',
+                }}
+                noBackground
+                title="Edit"
+              >
+                <Edit default size={2 * UNIT} />
+              </Button>
+              {deleteButton(
+                id,
+                idx,
+                `Are you sure you want to delete the backfill "${name}?"`,
+              )}
+            </FlexContainer>,
           );
         }
 

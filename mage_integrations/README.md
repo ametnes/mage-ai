@@ -99,7 +99,7 @@ python3 mage_integrations/sources/[INTEGRATION]/__init__.py \
   --selected_streams SCHEMAS > mage_integrations/TEST_CATALOG.json
 ```
 
-For example, for the Github source:
+For example, for the GitHub source:
 
 ```bash
 python3 mage_integrations/sources/github/__init__.py \
@@ -129,6 +129,16 @@ For each stream in `TEST_CATALOG.json`, find the nested `metadata` key and add a
     }
   },
 ...
+```
+
+Additonally, also add to add ```"selected": true``` to at least one column in each stream for SQL sources.
+
+```json
+{
+  "stream": "commits",
+  "tap_stream_id": "commits",
+  "selected": true
+}
 ```
 
 ## Test stream execution and save to output file
@@ -172,7 +182,7 @@ python3 mage_integrations/sources/[SOURCE_INTEGRATION]/__init__.py \
   --debug
 ```
 
-For example, an end-to-end Github to Postgres data integration:
+For example, an end-to-end GitHub to Postgres data integration:
 
 ```bash
 python3 mage_integrations/sources/github/__init__.py \

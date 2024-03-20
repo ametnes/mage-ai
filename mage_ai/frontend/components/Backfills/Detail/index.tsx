@@ -22,7 +22,10 @@ import PipelineRunType, {
   RunStatus,
 } from '@interfaces/PipelineRunType';
 import PipelineType from '@interfaces/PipelineType';
-import PipelineVariableType, { GLOBAL_VARIABLES_UUID } from '@interfaces/PipelineVariableType';
+import PipelineVariableType, {
+  GLOBAL_VARIABLES_UUID,
+  VariableType,
+} from '@interfaces/PipelineVariableType';
 import Select from '@oracle/elements/Inputs/Select';
 import Spacing from '@oracle/elements/Spacing';
 import Spinner from '@oracle/components/Spinner';
@@ -49,11 +52,12 @@ import {
 import { PageNameEnum } from '@components/PipelineDetailPage/constants';
 import { capitalize } from '@utils/string';
 import { datetimeInLocalTimezone } from '@utils/date';
+import { displayLocalOrUtcTime } from '@components/Triggers/utils';
 import {
   getFormattedVariable,
   getFormattedVariables,
 } from '@components/Sidekick/utils';
-import { getTimeInUTCString } from '@components/Triggers/utils';
+import { getRunStatusTextProps } from '@components/shared/Table/constants';
 import { goToWithQuery } from '@utils/routing';
 import { isEmptyObject } from '@utils/hash';
 import { isViewer } from '@utils/session';
@@ -140,7 +144,10 @@ function BackfillDetail({
       showPreviewRuns,
     ],
   );
-  const totalRuns = useMemo(() => dataPipelineRuns?.metadata?.count || [], [dataPipelineRuns]);
+  const totalRuns = useMemo(
+    () => showPreviewRuns ? totalRunCount : dataPipelineRuns?.metadata?.count,
+    [dataPipelineRuns, showPreviewRuns, totalRunCount],
+  );
 
   const [selectedRun, setSelectedRun] = useState<PipelineRunType>(null);
   const tablePipelineRuns = useMemo(() => {
@@ -150,7 +157,7 @@ function BackfillDetail({
       <>
         <PipelineRunsTable
           disableRowSelect={showPreviewRuns}
-          emptyMessage={!q?.status
+          emptyMessage={(!q?.status && !status)
             ? 'No runs available. Please complete backfill configuration by clicking "Edit backfill" above.'
             : 'No runs available'
           }
@@ -268,12 +275,8 @@ function BackfillDetail({
           </Text>
         </FlexContainer>,
         <Text
-          danger={BackfillStatusEnum.CANCELLED === status || BackfillStatusEnum.FAILED == status}
-          default={BackfillStatusEnum.INITIAL === status}
+          {...getRunStatusTextProps(status)}
           key="backfill_status"
-          monospace
-          muted={!status}
-          success={BackfillStatusEnum.RUNNING === status || BackfillStatusEnum.COMPLETED === status}
         >
           {status || 'inactive'}
         </Text>,
@@ -300,10 +303,7 @@ function BackfillDetail({
             monospace
             small
           >
-            {displayLocalTimezone
-              ? datetimeInLocalTimezone(startDatetime, displayLocalTimezone)
-              : getTimeInUTCString(startDatetime)
-            }
+            {displayLocalOrUtcTime(startDatetime, displayLocalTimezone)}
           </Text>,
         ],
         [
@@ -322,10 +322,7 @@ function BackfillDetail({
             monospace
             small
           >
-            {displayLocalTimezone
-              ? datetimeInLocalTimezone(endDatetime, displayLocalTimezone)
-              : getTimeInUTCString(endDatetime)
-            }
+            {displayLocalOrUtcTime(endDatetime, displayLocalTimezone)}
           </Text>,
         ],
         [
@@ -404,17 +401,23 @@ function BackfillDetail({
 
   const modelVariables = useMemo(() => modelVariablesInit || {}, [modelVariablesInit]);
   const variablesTable = useMemo(() => {
-    let arr = [];
+    const arr = getFormattedVariables(variables, block => block.uuid === GLOBAL_VARIABLES_UUID) || [];
 
     if (!isEmptyObject(modelVariables)) {
       Object.entries(modelVariables).forEach(([k, v]) => {
-        arr.push({
-          uuid: k,
-          value: getFormattedVariable(v),
-        });
+        const currentVarIdx = arr.findIndex((pipelineVar: VariableType) => pipelineVar?.uuid === k);
+        if (currentVarIdx !== -1) {
+          arr.splice(currentVarIdx, 1, {
+            uuid: k,
+            value: getFormattedVariable(v),
+          });
+        } else {
+          arr.push({
+            uuid: k,
+            value: getFormattedVariable(v),
+          });
+        }
       });
-    } else {
-      arr = getFormattedVariables(variables, block => block.uuid === GLOBAL_VARIABLES_UUID);
     }
 
     if (typeof arr === 'undefined' || !arr?.length) {

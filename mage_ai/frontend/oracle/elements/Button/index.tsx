@@ -1,7 +1,15 @@
 import React from 'react';
 import NextLink from 'next/link';
 import styled, { css } from 'styled-components';
+import { useRouter } from 'next/router';
 
+import EventPropertiesType, {
+  buildEventData,
+  EVENT_ACTION_TYPE_CLICK,
+  EVENT_COMPONENT_TYPE_BUTTON,
+  getDefaultEventParameters,
+  logEventCustom,
+} from '@interfaces/EventPropertiesType';
 import Flex from '@oracle/components/Flex';
 import FlexContainer from '@oracle/components/FlexContainer';
 import Spacing from '@oracle/elements/Spacing';
@@ -14,7 +22,7 @@ import {
   OUTLINE_OFFSET,
   OUTLINE_WIDTH,
 } from '@oracle/styles/units/borders';
-import { FONT_FAMILY_BOLD } from '@oracle/styles/fonts/primary';
+import { FONT_FAMILY_BOLD, FONT_FAMILY_REGULAR } from '@oracle/styles/fonts/primary';
 import { LARGE, REGULAR, SMALL } from '@oracle/styles/fonts/sizes';
 import { SHARED_LINK_STYLES } from '@oracle/elements/Link';
 import { UNIT } from '@oracle/styles/units/spacing';
@@ -41,7 +49,7 @@ export type ButtonProps = {
   beforeIcon?: any;
   borderColor?: string;
   borderLess?: boolean;
-  borderRadius?: number;
+  borderRadius?: string;
   borderRadiusLeft?: boolean;
   borderRadiusRight?: boolean;
   children?: any;
@@ -49,9 +57,11 @@ export type ButtonProps = {
   danger?: boolean;
   default?: boolean;
   disabled?: boolean;
+  eventProperties?: EventPropertiesType;
   fullWidth?: boolean;
   iconOnly?: boolean;
   id?: string;
+  inline?: boolean;
   large?: boolean;
   linkProps?: {
     as?: string;
@@ -60,13 +70,16 @@ export type ButtonProps = {
   loading?: boolean;
   minWidth?: number;
   noBackground?: boolean;
+  noBold?: boolean;
   noBorder?: boolean;
   noBorderRight?: boolean;
+  noHover?: boolean;
   noHoverUnderline?: boolean;
   noPadding?: boolean;
   notClickable?: boolean;
   outline?: boolean;
   onClick?: (e?: Event | React.MouseEvent<HTMLButtonElement, MouseEvent>) => void;
+  onMouseEnter?: (e?: Event | React.MouseEvent<HTMLButtonElement, MouseEvent>) => void;
   padding?: string;
   pill?: boolean;
   pointerEventsEnabled?: boolean;
@@ -103,7 +116,7 @@ export const SHARED_HIGHLIGHT_STYLES = css<ButtonHighlightProps>`
 
   ${props => props.highlightOnHoverAlt && `
     &:hover {
-      background-color: ${(props.theme.background || dark.background).dashboard} !important;
+      background-color: ${(props.theme || dark).borders?.medium2} !important;
     }
   `}
 `;
@@ -116,10 +129,17 @@ const SHARED_STYLES = css<{
 
   border: none;
   display: block;
-  font-family: ${FONT_FAMILY_BOLD};
   padding: ${1 * UNIT}px ${1.5 * UNIT}px;
   position: relative;
   z-index: 0;
+
+  ${props => !props.noBold && `
+    font-family: ${FONT_FAMILY_BOLD};
+  `}
+
+  ${props => props.noBold && `
+    font-family: ${FONT_FAMILY_REGULAR};
+  `}
 
   ${props => !props.hasOnClick && `
     &:hover {
@@ -179,7 +199,7 @@ const SHARED_STYLES = css<{
     border-width: 1px;
   `}
 
-  ${props => !props.borderRadiusLeft && !props.borderRadiusRight && !props.noBorder && `
+  ${props => !props.borderRadiusLeft && !props.borderRadiusRight && `
     border-radius: ${BORDER_RADIUS}px;
   `}
 
@@ -192,7 +212,7 @@ const SHARED_STYLES = css<{
   `}
 
   ${props => props.borderRadius && `
-    border-radius: ${props.borderRadius}px;
+    border-radius: ${props.borderRadius} !important;
   `}
 
   ${props => !props.borderRadiusLeft && props.borderRadiusRight && `
@@ -358,6 +378,7 @@ const Button = ({
   compact,
   danger,
   disabled,
+  eventProperties,
   iconOnly,
   id,
   linkProps,
@@ -366,10 +387,27 @@ const Button = ({
   secondary,
   ...props
 }: ButtonProps, ref) => {
+  const router = useRouter();
+  const query = router?.query;
   const iconProps = {
     disabled,
     size: UNIT * 1.5,
   };
+
+  const {
+    eventActionType = EVENT_ACTION_TYPE_CLICK,
+    eventComponentType = EVENT_COMPONENT_TYPE_BUTTON,
+    eventParameters: eventParametersProp = {},
+  } = eventProperties || {};
+  const defaultEventParameters = getDefaultEventParameters(eventParametersProp, query);
+  const {
+    eventName,
+    eventParameters,
+  } = buildEventData({
+    actionType: eventActionType,
+    componentType: eventComponentType,
+    parameters: defaultEventParameters,
+  });
 
   const {
     as: asHref,
@@ -378,6 +416,7 @@ const Button = ({
   const ElToUse = (asHref || linkHref) ? AnchorStyle : ButtonStyle;
 
   const el = (
+    // @ts-ignore
     <ElToUse
       {...props}
       compact={compact}
@@ -389,6 +428,13 @@ const Button = ({
       onClick={onClick
         ? (e) => {
           e?.preventDefault();
+          const updatedEventParameters = {
+            ...eventParameters,
+          };
+          if (typeof children === 'string') {
+            updatedEventParameters.label = children;
+          }
+          logEventCustom(eventName, eventParameters);
           onClick?.(e);
         }
         : null

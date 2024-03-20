@@ -6,10 +6,16 @@ from typing import Dict, Optional
 from mage_ai.cluster_manager.config import LifecycleConfig, WorkspaceConfig
 from mage_ai.cluster_manager.constants import ClusterType
 from mage_ai.cluster_manager.errors import WorkspaceExistsError
-from mage_ai.data_preparation.repo_manager import ProjectType, get_project_type
+from mage_ai.data_preparation.repo_manager import (
+    ProjectType,
+    get_project_type,
+    get_repo_config,
+)
 from mage_ai.orchestration.constants import Entity
-from mage_ai.orchestration.db.models.oauth import User
+from mage_ai.orchestration.db import db_connection, safe_db_query
+from mage_ai.orchestration.db.models.oauth import Permission, User
 from mage_ai.settings.repo import get_repo_path
+from mage_ai.shared.hash import merge_dict
 
 
 class classproperty(property):
@@ -19,13 +25,14 @@ class classproperty(property):
 
 class Workspace(abc.ABC):
     config_class = None
+    cluster_type = None
 
     def __init__(self, name: str):
         self.name = name
         self._config = None
 
     @classproperty
-    def project_folder(cls) -> str:
+    def project_folder(self) -> str:
         return os.path.join(get_repo_path(), 'projects')
 
     @property
@@ -48,7 +55,7 @@ class Workspace(abc.ABC):
 
     @property
     def project_uuid(self) -> Optional[str]:
-        self.config.get('project_uuid')
+        return self.config.project_uuid
 
     def get_access(self, user: User) -> int:
         return user.get_access(Entity.PROJECT, self.project_uuid)
@@ -112,10 +119,14 @@ class Workspace(abc.ABC):
 
             project_uuid = uuid.uuid4().hex
             data['project_uuid'] = project_uuid
+            data['workspace_initial_metadata'] = get_repo_config().workspace_initial_metadata
 
         workspace_class = cls.workspace_class_from_type(cluster_type)
+
         try:
-            return workspace_class.initialize(name, config_path, **payload, **data)
+            return workspace_class.initialize(
+                name, config_path, **merge_dict(payload, data)
+            )
         except Exception:
             if config_path and os.path.exists(config_path):
                 os.remove(config_path)
@@ -138,13 +149,22 @@ class Workspace(abc.ABC):
         raise NotImplementedError('Initialize method not implemented')
 
     @abc.abstractmethod
+    @safe_db_query
     def delete(self, **kwargs):
         """
         Delete the workspace. Individual workspace classes should still implement
         this method to delete the cloud instance.
         """
-        if get_project_type() == ProjectType.MAIN and os.path.exists(self.config_path):
-            os.remove(self.config_path)
+        if get_project_type() == ProjectType.MAIN:
+            if os.path.exists(self.config_path):
+                os.remove(self.config_path)
+
+            # delete workspace permissions
+            Permission.query.filter(
+                Permission.entity == Entity.PROJECT,
+                Permission.entity_id == self.project_uuid,
+            ).delete(synchronize_session=False)
+            db_connection.session.commit()
 
     @abc.abstractmethod
     def stop(self):

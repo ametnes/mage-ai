@@ -5,6 +5,9 @@ import { useMutation } from 'react-query';
 
 import Button from '@oracle/elements/Button';
 import Checkbox from '@oracle/elements/Checkbox';
+import ClickOutside from '@oracle/components/ClickOutside';
+import ErrorPopup from '@components/ErrorPopup';
+import ErrorsType from '@interfaces/ErrorsType';
 import FlexContainer from '@oracle/components/FlexContainer';
 import Headline from '@oracle/elements/Headline';
 import Link from '@oracle/elements/Link';
@@ -48,7 +51,7 @@ function SyncData() {
   const { data: dataSyncs } = api.syncs.list();
   const [sync, setSync] = useState<SyncType>(null);
   const [userGitSettings, setUserGitSettings] = useState<UserGitSettingsType>(null);
-  const [error, setError] = useState<string>(null);
+  const [errors, setErrors] = useState<ErrorsType>(null);
 
   const [showSyncSettings, setShowSyncSettings] = useState<boolean>(null);
 
@@ -87,11 +90,10 @@ function SyncData() {
               );
             }
           },
-          onErrorCallback: ({
-            error: {
-              exception,
-            },
-          }) => setError(exception),
+          onErrorCallback: (response, errors) => setErrors({
+            errors,
+            response,
+          }),
         },
       ),
     },
@@ -113,11 +115,10 @@ function SyncData() {
               );
             }
           },
-          onErrorCallback: ({
-            error: {
-              exception,
-            },
-          }) => setError(exception),
+          onErrorCallback: (response, errors) => setErrors({
+            errors,
+            response,
+          }),
         },
       ),
     },
@@ -164,7 +165,7 @@ function SyncData() {
                 <Text small>
                   Run <Link
                     onClick={() => {
-                      navigator.clipboard.writeText('cat ~/.ssh/id_ed25519.pub | base64 | tr -d \\\\n | echo');
+                      navigator.clipboard.writeText('cat ~/.ssh/id_ed25519.pub | base64 | tr -d \\\\n && echo');
                       toast.success(
                         'Successfully copied to clipboard.',
                         {
@@ -175,7 +176,7 @@ function SyncData() {
                     }}
                     small
                   >
-                    cat ~/.ssh/id_ed25519.pub | base64 | tr -d \\n | echo
+                    cat ~/.ssh/id_ed25519.pub | base64 | tr -d \\n && echo
                   </Link> in terminal to get base64 encoded public key and paste the result here. The key will be stored as a Mage secret.
                 </Text>
               </Spacing>
@@ -300,7 +301,7 @@ function SyncData() {
         <Spacing mt={UNITS_BETWEEN_ITEMS_IN_SECTIONS}>
           {authType === AuthType.SSH && (
             <Text bold>
-              You will need to <Link href="https://docs.mage.ai/development/git/generate-an-ssh-token" openNewWindow>
+              You will need to <Link href="https://docs.mage.ai/development/git/configure#generate-ssh-token" openNewWindow>
                 set up your SSH key
               </Link> if you have not done so already.
             </Text>
@@ -498,12 +499,17 @@ function SyncData() {
           </Button>
         </Spacing>
 
-        {error && (
-          <Spacing mt={1}>
-            <Text danger>
-              {error}
-            </Text>
-          </Spacing>
+        {errors && (
+          <ClickOutside
+            disableClickOutside
+            isOpen
+            onClickOutside={() => setErrors?.(null)}
+          >
+            <ErrorPopup
+              {...errors}
+              onClose={() => setErrors?.(null)}
+            />
+          </ClickOutside>
         )}
         
         {showSyncOperations && (

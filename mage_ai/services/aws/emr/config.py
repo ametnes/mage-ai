@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass, field
-from typing import Dict
+from typing import Dict, List
 
 from mage_ai.shared.config import BaseConfig
 from mage_ai.shared.hash import merge_dict
@@ -26,6 +26,7 @@ class EmrScalingPocliy(BaseConfig):
 class EmrConfig(BaseConfig):
     bootstrap_script_path: str = None
     ec2_key_name: str = None
+    ec2_key_path: str = None
     master_security_group: str = None
     slave_security_group: str = None
     master_instance_type: str = DEFAULT_INSTANCE_TYPE
@@ -34,6 +35,7 @@ class EmrConfig(BaseConfig):
     slave_instance_type: str = DEFAULT_INSTANCE_TYPE
     slave_spark_properties: Dict = field(default_factory=dict)
     scaling_policy: EmrScalingPocliy = None
+    spark_jars: List = field(default_factory=list)
 
     def get_instances_config(
         self,

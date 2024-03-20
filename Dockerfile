@@ -62,6 +62,7 @@ RUN \
   tag=$(tail -n 1 /tmp/constants.py) && \
   VERSION=$(echo "$tag" | tr -d "'") && \
   pip3 install --no-cache-dir /tmp/dist/mage-ai-$VERSION.tar.gz && \
+    pip3 install "mage-ai[azure]" "mage-ai[clickhouse]" "mage-ai[dbt]" "mage-ai[google-cloud-storage]" "mage-ai[hdf5]" "mage-ai[mysql]" "mage-ai[postgres]" "mage-ai[redshift]" "mage-ai[s3]" "mage-ai[snowflake]" "mage-ai[spark]" "mage-ai[streaming]"
   rm /tmp/constants.py && \
   # Setup user
   groupadd -g $GID -o $UNAME && \

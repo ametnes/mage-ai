@@ -1,22 +1,31 @@
+import * as ReactDOM from 'react-dom';
+import Editor, { DiffEditor, loader } from '@monaco-editor/react';
 import React, {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react';
-import * as ReactDOM from 'react-dom';
-import Editor, { loader } from '@monaco-editor/react';
+import { getHost } from '@api/utils/url';
 
 /*
- * If https://cdn.jsdelivr.net (the default CDN) is down, uncomment the
- * loader.config method call below to use a different CDN for loading
- * the Monaco Editor.
+ * In order to load the Monaco Editor locally and avoid fetching it from a CDN
+ * (the default CDN is https://cdn.jsdelivr.net), the monaco-editor bundle was
+ * copied into the "public" folder from node_modules, and we called the
+ * loader.config method below to reference it.
+ *
+ * We can also use this method to load the Monaco Editor from a different
+ * CDN like Cloudflare.
  */
-// loader.config({
-//   paths: {
-//     vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.33.0/min/vs',
-//   },
-// });
+loader.config({
+  paths: {
+    // Load Monaco Editor from "public" directory
+    vs: `${getHost()}/monaco-editor/min/vs`,
+    // Load Monaco Editor from different CDN
+    // vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.33.0/min/vs',
+  },
+});
 
 import BlockType, { BlockTypeEnum } from '@interfaces/BlockType';
 import Text from '@oracle/elements/Text';
@@ -26,6 +35,8 @@ import {
   DEFAULT_LANGUAGE,
   DEFAULT_THEME,
 } from './constants';
+import { DEBUG } from '@utils/environment';
+import { DisableGlobalKeyboardShortcuts } from '@context/Keyboard';
 import { MONO_FONT_FAMILY_REGULAR } from '@oracle/styles/fonts/primary';
 import { REGULAR_FONT_SIZE as DEFAULT_FONT_SIZE } from '@oracle/styles/fonts/sizes';
 import {
@@ -41,6 +52,7 @@ import { defineTheme } from './utils';
 import { saveCode } from './keyboard_shortcuts/shortcuts';
 
 export type OnDidChangeCursorPositionParameterType = {
+  editor: any;
   editorRect: {
     height?: number;
     top: number;
@@ -58,70 +70,100 @@ export type CodeEditorSharedProps = {
   setSelected?: (value: boolean) => void;
   setTextareaFocused?: (value: boolean) => void;
   textareaFocused?: boolean;
-};
+} & DisableGlobalKeyboardShortcuts;
 
 type CodeEditorProps = {
   autocompleteProviders?: ProvidersType;
   autoHeight?: boolean;
   autoSave?: boolean;
   block?: BlockType;
+  containerWidth?: number | string;
+  editorRef?: any;
   fontSize?: number;
   language?: string;
+  minimap?: boolean;
   onChange?: (value: string) => void;
   onContentSizeChangeCallback?: () => void;
-  onMountCallback?: () => void;
+  onMountCallback?: (editor?: any, monaco?: any) => void;
   onSave?: (value: string) => void;
-  padding?: boolean;
+  originalValue?: string;
+  padding?: number;
   placeholder?: string;
   readOnly?: boolean;
   shortcuts?: ((monaco: any, editor: any) => void)[];
+  showDiffs?: boolean;
   showLineNumbers?: boolean;
   tabSize?: number;
   theme?: any;
+  uuid?: string;
   value?: string;
   width?: number | string;
 } & CodeEditorSharedProps;
 
 function CodeEditor({
-  autocompleteProviders,
   autoHeight,
   autoSave,
+  autocompleteProviders,
   block,
+  containerWidth,
+  editorRef: editorRefProp,
   fontSize = DEFAULT_FONT_SIZE,
   height,
   language,
+  minimap,
   onChange,
   onContentSizeChangeCallback,
   onDidChangeCursorPosition,
   onMountCallback,
   onSave,
+  originalValue,
   padding,
   placeholder,
   readOnly,
   selected,
+  setDisableGlobalKeyboardShortcuts,
   setSelected,
   setTextareaFocused,
   shortcuts: shortcutsProp,
+  showDiffs,
   showLineNumbers = true,
   tabSize = 4,
   textareaFocused,
-  theme: themeProp,
+  theme = DEFAULT_THEME,
+  uuid,
   value,
   width = '100%',
-}: CodeEditorProps) {
-  const editorRef = useRef(null);
+}: CodeEditorProps, ref) {
+  const editorRef = editorRefProp || useRef(null);
   const monacoRef = useRef(null);
   const refBottomOfEditor = useRef(null);
+  const timeoutRef = useRef(null);
 
   const [completionDisposable, setCompletionDisposable] = useState([]);
   const [monacoInstance, setMonacoInstance] = useState(null);
   const [mounted, setMounted] = useState<boolean>(false);
-  const [theme, setTheme] = useState(themeProp || DEFAULT_THEME);
+  const [loadedTheme, setLoadedTheme] = useState<string>(null);
+
+  const updateTheme = useCallback((monaco) => {
+    setLoadedTheme((prevTheme) => {
+      if (prevTheme !== theme) {
+        defineTheme(theme).then((loaded) => {
+          if (loaded) {
+            monaco.editor.setTheme(theme);
+            return theme;
+          }
+        });
+      }
+
+      return prevTheme;
+    });
+  }, [theme]);
 
   const handleEditorWillMount = useCallback((monaco) => {
     monaco.languages.typescript.javascriptDefaults.setEagerModelSync(true);
     setMonacoInstance(monaco);
-  }, []);
+    updateTheme(monaco);
+  }, [updateTheme]);
 
   const handleEditorDidMount = useCallback((editor, monaco) => {
     editorRef.current = editor;
@@ -142,16 +184,15 @@ function CodeEditor({
 
     addKeyboardShortcut(monaco, editor, shortcuts);
 
-    editor.getModel().updateOptions({
+    !showDiffs && editor.getModel().updateOptions({
       tabSize,
     });
 
     if (autoHeight && !height) {
-      editor._domElement.style.height =
-        `${calculateHeightFromContent(value || '')}px`;
+      editor._domElement.style.height = `${calculateHeightFromContent(value || '')}px`;
     }
 
-    editor.onDidFocusEditorWidget(() => {
+    !showDiffs && editor.onDidFocusEditorWidget(() => {
       /*
        * Added onClick handler for selecting block in CodeContainerStyle component.
        * Disabled the setSelected call below because if a user updates the block name
@@ -160,10 +201,23 @@ function CodeEditor({
        * when mounting the code editor here.
        */
       // setSelected?.(true);
+      // DEBUG(() => console.log('onDidFocusEditorWidget', uuid));
+
+      if (setDisableGlobalKeyboardShortcuts) {
+        setDisableGlobalKeyboardShortcuts?.(true);
+      }
       setTextareaFocused?.(true);
     });
 
-    editor.onDidContentSizeChange(({
+    !showDiffs && editor.onDidBlurEditorText(() => {
+      // DEBUG(() => console.log('onDidBlurEditorText', uuid));
+
+      if (setDisableGlobalKeyboardShortcuts) {
+        setDisableGlobalKeyboardShortcuts?.(false);
+      }
+    });
+
+    !showDiffs && editor.onDidContentSizeChange(({
       contentHeight,
       contentHeightChanged,
     }) => {
@@ -177,13 +231,14 @@ function CodeEditor({
     });
 
     if (selected && textareaFocused) {
-      setTimeout(() => {
+      clearTimeout(timeoutRef.current);
+      timeoutRef.current = setTimeout(() => {
         editor.focus();
       }, 1);
     }
 
-    if (onDidChangeCursorPosition) {
-      editor.onDidChangeCursorPosition(({
+    if (!showDiffs && onDidChangeCursorPosition) {
+      editor?.onDidChangeCursorPosition(({
         position: {
           lineNumber,
         },
@@ -194,12 +249,14 @@ function CodeEditor({
         } = editor._domElement.getBoundingClientRect();
         const lineNumberTop = editor.getTopForLineNumber(lineNumber);
 
-        onDidChangeCursorPosition({
+        onDidChangeCursorPosition?.({
+          editor,
           editorRect: {
             height: Number(height),
             top: Number(top),
           },
           position: {
+            lineNumber,
             lineNumberTop,
           },
         });
@@ -207,7 +264,7 @@ function CodeEditor({
     }
 
     setMounted(true);
-    onMountCallback?.();
+    onMountCallback?.(editor, monaco);
   }, [
     autoHeight,
     height,
@@ -219,16 +276,11 @@ function CodeEditor({
     setMounted,
     setTextareaFocused,
     shortcutsProp,
+    showDiffs,
     tabSize,
     textareaFocused,
     value,
   ]);
-
-  useEffect(() => {
-    defineTheme(DEFAULT_THEME).then(() => {
-      setTheme(DEFAULT_THEME);
-    });
-  }, []);
 
   useEffect(() => {
     let autoSaveInterval;
@@ -245,17 +297,19 @@ function CodeEditor({
     };
   }, [
     autoSave,
-    editorRef,
     onSave,
   ]);
 
   const selectedPrevious = usePrevious(selected);
   const textareaFocusedPrevious = usePrevious(textareaFocused);
 
+  // This allows us to press escape and remove focus on the text.
   useEffect(() => {
     if (editorRef?.current) {
+      clearTimeout(timeoutRef.current);
+
       if (selected && textareaFocused) {
-        setTimeout(() => {
+        timeoutRef.current = setTimeout(() => {
           editorRef.current.focus();
         }, 1);
       } else {
@@ -263,11 +317,10 @@ function CodeEditor({
           .findDOMNode(editorRef.current._domElement)
           // @ts-ignore
           .getElementsByClassName('inputarea');
-        textarea[0].blur();
+        textarea?.[0]?.blur();
       }
     }
   }, [
-    editorRef,
     selected,
     selectedPrevious,
     textareaFocused,
@@ -319,12 +372,16 @@ function CodeEditor({
     textareaFocusedPrevious,
   ]);
 
+  const EditorElement = useMemo(() => showDiffs ? DiffEditor : Editor, [showDiffs]);
+
   return (
     <ContainerStyle
       hideDuplicateMenuItems
       padding={padding}
+      ref={ref}
       style={{
         display: mounted ? null : 'none',
+        width: containerWidth,
       }}
     >
       {placeholder && !value?.length && (
@@ -334,10 +391,11 @@ function CodeEditor({
           </Text>
         </PlaceholderStyle>
       )}
-      <Editor
+      <EditorElement
         beforeMount={handleEditorWillMount}
         height={height}
         language={language || DEFAULT_LANGUAGE}
+        modified={showDiffs ? value : undefined}
         onChange={(val: string) => {
           onChange?.(val);
         }}
@@ -349,9 +407,9 @@ function CodeEditor({
           fontLigatures: true,
           fontSize,
           hideCursorInOverviewRuler: true,
-          lineNumbers: showLineNumbers,
+          lineNumbers: showLineNumbers ? 'on' : 'off',
           minimap: {
-            enabled: false,
+            enabled: !!minimap,
           },
           overviewRulerBorder: false,
           readOnly,
@@ -365,9 +423,18 @@ function CodeEditor({
           useShadowDOM: false,
           wordBasedSuggestions: false,
           wordWrap: block?.type === BlockTypeEnum.MARKDOWN ? 'on' : 'off',
+          // Options for DiffEditor
+          colorDecorators: true,
+          diffAlgorithm: 'advanced',
+          enableSplitViewResizing: true,
+          renderIndicators: true,
+          renderLineHighlight: 'all',
+          renderMarginRevertIcon: true,
+          renderSideBySide: true,
         }}
-        theme={theme}
-        value={value}
+        original={showDiffs ? originalValue : undefined}
+        theme={loadedTheme || 'vs-dark'}
+        value={showDiffs ? undefined : value}
         width={width}
       />
       <div ref={refBottomOfEditor} />
@@ -375,4 +442,4 @@ function CodeEditor({
   );
 }
 
-export default CodeEditor;
+export default React.forwardRef(CodeEditor);

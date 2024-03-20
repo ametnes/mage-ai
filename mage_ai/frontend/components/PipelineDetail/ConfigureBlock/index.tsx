@@ -1,6 +1,6 @@
 import { DndProvider } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation } from 'react-query';
 
 import BlockCubeGradient from '@oracle/icons/custom/BlockCubeGradient';
@@ -75,7 +75,7 @@ function ConfigureBlock({
   });
 
   // @ts-ignore
-  const sharedPipelinesCount = Object.keys(block?.pipelines || {}).length;
+  const sharedPipelinesCount = (block?.pipelines || [])?.length;
 
   const refTextInput = useRef(null);
   const [blockAttributes, setBlockAttributes] = useState<{
@@ -90,6 +90,34 @@ function ConfigureBlock({
     name: defaultName,
     type: block?.type,
   });
+
+  const handleOnSave = useCallback(() => {
+    onSave({
+      ...blockAttributes,
+      name: blockAttributes?.name || defaultName,
+    });
+    onClose();
+  }, [blockAttributes, defaultName, onClose, onSave]);
+    
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      event.stopPropagation();
+      if (event.key === 'Escape') {
+        onClose();
+      } else if (event.key === 'Enter') {
+        const buttonText = event.target.innerText;
+        if (!buttonText.startsWith('Save and') && buttonText !== 'Cancel') {
+          handleOnSave();
+        }
+      }
+    };
+
+    document?.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document?.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [handleOnSave, onClose]);
 
   useEffect(() => {
     refTextInput?.current?.focus();
@@ -143,6 +171,7 @@ function ConfigureBlock({
           }) => {
             const {
               block_type: blockType,
+              code, // Raw code without block template
               configuration,
               content,
               language,
@@ -152,7 +181,7 @@ function ConfigureBlock({
               ...prev,
               block_action_object: null,
               configuration: configuration,
-              content,
+              content: content,
               language,
               type: blockType,
             }));
@@ -172,11 +201,19 @@ function ConfigureBlock({
     if (isGenerateBlock && generateBlockCommand && !llm) {
       // @ts-ignore
       createLLM({
+        // llm: {
+        //   request: {
+        //     block_description: generateBlockCommand,
+        //   },
+        //   use_case: LLMUseCaseEnum.GENERATE_CODE,
+        // },
         llm: {
           request: {
             block_description: generateBlockCommand,
+            block_type: BlockTypeEnum.TRANSFORMER,
+            code_language: BlockLanguageEnum.PYTHON,
           },
-          use_case: LLMUseCaseEnum.GENERATE_BLOCK_WITH_DESCRIPTION,
+          use_case: LLMUseCaseEnum.GENERATE_CODE,
         },
       });
     }
@@ -523,10 +560,7 @@ function ConfigureBlock({
             bold
             centerText
             disabled={isLoadingCreateLLM}
-            onClick={() => onSave({
-              ...blockAttributes,
-              name: blockAttributes?.name || defaultName,
-            })}
+            onClick={handleOnSave}
             primary
             tabIndex={0}
             uuid="ConfigureBlock/SaveAndAddBlock"
@@ -537,7 +571,7 @@ function ConfigureBlock({
               : (isReplacingBlock
                 ? 'replace'
                 : 'add')
-            } block
+            }
           </KeyboardShortcutButton>
 
           <Spacing ml={1}>

@@ -4,12 +4,14 @@ import random
 import sys
 import time
 from datetime import datetime
+from typing import List
 
 from botocore.exceptions import ClientError
 
 from mage_ai.services.aws import get_aws_boto3_client
 from mage_ai.services.aws.emr import emr_basics
 from mage_ai.services.aws.emr.config import EmrConfig
+from mage_ai.services.compute.aws.constants import ClusterStatusState
 
 MAX_STEPS_IN_CLUSTER = 255 - 55
 MAX_RUNNING_OR_PENDING_STEPS = 15
@@ -123,18 +125,29 @@ def describe_cluster(cluster_id):
     return emr_basics.describe_cluster(cluster_id, emr_client)
 
 
-def list_clusters():
+def list_clusters(cluster_states: List[ClusterStatusState] = None):
     emr_client = get_aws_boto3_client('emr')
 
+    if cluster_states is None:
+        cluster_states = [
+            ClusterStatusState.BOOTSTRAPPING,
+            ClusterStatusState.RUNNING,
+            ClusterStatusState.STARTING,
+            ClusterStatusState.WAITING,
+        ]
+
     clusters = emr_client.list_clusters(
-        ClusterStates=[
-            'BOOTSTRAPPING',
-            'RUNNING',
-            'STARTING',
-            'WAITING',
-        ],
+        ClusterStates=cluster_states,
     )
     return clusters
+
+
+def terminate_clusters(cluster_ids: List[str]) -> None:
+    emr_client = get_aws_boto3_client('emr')
+
+    return emr_client.terminate_job_flows(
+        JobFlowIds=cluster_ids,
+    )
 
 
 def submit_spark_job(
@@ -147,6 +160,10 @@ def submit_spark_job(
 ):
     if emr_config is None:
         emr_config = dict()
+
+    if isinstance(emr_config, dict):
+        emr_config = EmrConfig.load(config=emr_config)
+
     emr_client = get_aws_boto3_client('emr')
 
     clusters = emr_client.list_clusters(
@@ -204,7 +221,7 @@ def submit_spark_job(
         cluster_id = create_a_new_cluster(
             cluster_name,
             steps,
-            EmrConfig.load(config=emr_config),
+            emr_config,
             bootstrap_script_path=bootstrap_script_path,
             idle_timeout=idle_timeout,
             log_uri=log_uri,
@@ -274,20 +291,32 @@ def __add_step(emr_client, cluster_id, steps):
 
 
 def __build_steps_config(steps):
-    return [{
-        'Name': step['name'],
-        'ActionOnFailure': 'CONTINUE',
-        'HadoopJarStep': {
-            'Jar': 'command-runner.jar',
-            'Args': [
-                'spark-submit',
-                '--deploy-mode',
-                'cluster',
-                step['script_uri'],
-                *step['script_args'],
+    step_configs = []
+
+    for step in steps:
+        args = [
+            'spark-submit',
+            '--deploy-mode',
+            'cluster',
+        ]
+        if step['jars']:
+            args += [
+                '--jars',
+                ','.join(step['jars']),
             ]
-        }
-    } for step in steps]
+        args += [
+            step['script_uri'],
+            *step['script_args'],
+        ]
+        step_configs.append({
+            'Name': step['name'],
+            'ActionOnFailure': 'CONTINUE',
+            'HadoopJarStep': {
+                'Jar': 'command-runner.jar',
+                'Args': args,
+            }
+        })
+    return step_configs
 
 
 def __status_poller(intro, done_status, func):

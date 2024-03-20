@@ -11,6 +11,7 @@ from mage_ai.data_preparation.models.project.constants import FeatureUUID
 class PipelinePresenter(BasePresenter):
     default_attributes = [
         'blocks',
+        'cache_block_output_in_memory',
         'concurrency_config',
         'created_at',
         'data_integration',
@@ -20,14 +21,17 @@ class PipelinePresenter(BasePresenter):
         'executor_type',
         'name',
         'notification_config',
+        'remote_variables_dir',
         'retry_config',
         'run_pipeline_in_one_process',
+        'settings',
         'spark_config',
         'tags',
         'type',
         'updated_at',
         'uuid',
         'variables',
+        'variables_dir',
         'widgets',
     ]
 
@@ -38,6 +42,10 @@ class PipelinePresenter(BasePresenter):
         include_extensions = query.get('includes_extensions', [True])
         if include_extensions:
             include_extensions = include_extensions[0]
+
+        include_schedules = query.get('include_schedules', [False])
+        if include_schedules:
+            include_schedules = include_schedules[0]
 
         if constants.DETAIL == display_format:
             include_block_pipelines = query.get('include_block_pipelines', [False])
@@ -52,6 +60,10 @@ class PipelinePresenter(BasePresenter):
             if include_outputs:
                 include_outputs = include_outputs[0]
 
+            include_outputs_spark = query.get('includes_outputs_spark', [False])
+            if include_outputs_spark:
+                include_outputs_spark = include_outputs_spark[0]
+
             include_block_metadata = query.get('includes_block_metadata', [True])
             if include_block_metadata:
                 include_block_metadata = include_block_metadata[0]
@@ -61,7 +73,7 @@ class PipelinePresenter(BasePresenter):
                     FeatureUUID.DATA_INTEGRATION_IN_BATCH_PIPELINE,
                 )
 
-            return await self.model.to_dict_async(
+            data = await self.model.to_dict_async(
                 include_block_catalog=include_block_catalog,
                 include_block_metadata=include_block_metadata,
                 include_block_pipelines=include_block_pipelines,
@@ -71,6 +83,7 @@ class PipelinePresenter(BasePresenter):
                 include_content=include_content,
                 include_extensions=include_extensions,
                 include_outputs=include_outputs,
+                include_outputs_spark=include_outputs_spark,
                 sample_count=DATAFRAME_SAMPLE_COUNT_PREVIEW,
             )
         elif constants.UPDATE == display_format:
@@ -80,12 +93,10 @@ class PipelinePresenter(BasePresenter):
             if self.model.history:
                 data.update(history=[h.to_dict() for h in self.model.history])
 
-        include_schedules = query.get('include_schedules', [False])
-        if include_schedules:
-            include_schedules = include_schedules[0]
-
         if include_schedules:
             data['schedules'] = self.model.schedules
+
+        data['updated_at'] = self.model.updated_at
 
         return data
 

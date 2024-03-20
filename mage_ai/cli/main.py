@@ -11,7 +11,7 @@ from typer.core import TyperGroup
 from mage_ai.cli.utils import parse_runtime_variables
 from mage_ai.data_preparation.repo_manager import ProjectType
 from mage_ai.services.newrelic import initialize_new_relic
-from mage_ai.shared.constants import InstanceType
+from mage_ai.shared.constants import ENV_VAR_INSTANCE_TYPE, InstanceType
 
 
 class OrderCommands(TyperGroup):
@@ -166,7 +166,7 @@ def start(
         project=project_path,
         manage=manage_instance == "1",
         dbt_docs=dbt_docs_instance == "1",
-        instance_type=instance_type,
+        instance_type=os.getenv(ENV_VAR_INSTANCE_TYPE, instance_type),
         project_type=project_type,
         cluster_type=cluster_type,
         project_uuid=project_uuid,
@@ -227,7 +227,7 @@ def run(
          if enable_new_relic else nullcontext():
         sync_config = get_sync_config()
         if sync_config and sync_config.sync_on_executor_start:
-            result = run_git_sync(sync_config=sync_config)
+            result = run_git_sync(sync_config=sync_config, setup_repo=True)
             log_git_sync(result, logger)
 
         runtime_variables = dict()
@@ -267,6 +267,7 @@ def run(
             ExecutorFactory.get_block_executor(
                 pipeline,
                 block_uuid,
+                block_run_id=block_run_id,
                 execution_partition=execution_partition,
                 executor_type=executor_type,
             ).execute(

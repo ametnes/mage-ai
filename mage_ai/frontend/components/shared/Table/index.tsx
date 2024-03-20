@@ -24,6 +24,7 @@ import {
   SortQueryEnum,
   getTableRowUuid,
 } from './constants';
+import { MetaQueryEnum } from '@api/constants';
 import { PADDING_UNITS, UNIT } from '@oracle/styles/units/spacing';
 import { SortAscending, SortDescending } from '@oracle/icons';
 import {
@@ -36,7 +37,9 @@ import {
 } from './index.style';
 import { goToWithQuery } from '@utils/routing';
 import { isInteractiveElement } from '@context/shared/utils';
-import { set } from '@storage/localStorage';
+import { queryFromUrl } from '@utils/url';
+import { remove, set } from '@storage/localStorage';
+import { selectEntriesWithValues } from '@utils/hash';
 import { sortByKey } from '@utils/array';
 
 export type ColumnType = {
@@ -68,8 +71,14 @@ type TableProps = {
     href: string;
   };
   buildRowProps?: (rowIndex: number) => {
-    renderCell: (cell: any, colIndex: number) => any;
-    renderRow: (cells: any) => any;
+    cellProps?: {
+      [key: string]: string | any;
+    };
+    renderCell?: (cell: any, colIndex: number) => any;
+    renderRow?: (cells: any) => any;
+    rowProps?: {
+      [key: string]: string | any;
+    };
   };
   columnBorders?: boolean;
   columnFlex: number[];
@@ -77,6 +86,7 @@ type TableProps = {
   columns?: ColumnType[];
   compact?: boolean;
   defaultSortColumnIndex?: number;
+  disableSort?: boolean;
   getObjectAtRowIndex?: (rowIndex: number) => any;
   getUUIDFromRow?: (row: React.ReactElement[]) => string;
   getUniqueRowIdentifier?: (row: React.ReactElement[]) => string;
@@ -100,6 +110,7 @@ type TableProps = {
   rowVerticalPadding?: number;
   rows: any[][];
   rowsGroupedByIndex?: number[][] | string[][];
+  selectedRowIndexInternal?: number;
   setRowsSorted?: (rows: React.ReactElement[][]) => void;
   sortableColumnIndexes?: number[];
   sortedColumn?: SortedColumnType;
@@ -123,6 +134,7 @@ function Table({
   columns = [],
   compact,
   defaultSortColumnIndex,
+  disableSort,
   getObjectAtRowIndex,
   getUUIDFromRow,
   getUniqueRowIdentifier,
@@ -146,16 +158,29 @@ function Table({
   rowVerticalPadding,
   rows,
   rowsGroupedByIndex,
+  selectedRowIndexInternal: selectedRowIndexInternalProp,
   setRowsSorted,
   sortableColumnIndexes,
   sortedColumn: sortedColumnInit,
   stickyFirstColumn,
   stickyHeader,
-  uuid,
+  uuid = 'table',
   uuidColumnIndex,
   wrapColumns,
 }: TableProps, ref) {
-  const [selectedRowIndexInternal, setSelectedRowIndexInternal] = useState<number>(null);
+  const [selectedRowIndexInternalState, setSelectedRowIndexInternal] = useState<number>(null);
+  const selectedRowIndexInternal =
+    useMemo(() => {
+      if (typeof selectedRowIndexInternalProp !== 'undefined') {
+        return selectedRowIndexInternalProp;
+      }
+
+      return selectedRowIndexInternalState;
+    }, [
+      selectedRowIndexInternalProp,
+      selectedRowIndexInternalState,
+    ]);
+
   const onClickRowInternal = useCallback((rowIndex: number, event: any) => {
     setSelectedRowIndexInternal(prev => prev === rowIndex ? null : rowIndex);
   }, [
@@ -169,8 +194,8 @@ function Table({
     selectedRowIndexInternal,
   ]);
   const apiArguments = buildApiOptionsFromObject && objectAtRowIndex
-      ? buildApiOptionsFromObject(objectAtRowIndex)
-      : [null];
+    ? buildApiOptionsFromObject(objectAtRowIndex)
+    : [null];
   const { data } = apiForFetchingAfterAction?.(...apiArguments) || {};
 
   const [coordinates, setCoordinates] = useState<{
@@ -265,7 +290,7 @@ function Table({
     rightClickMenuWidth,
   ]);
 
-  const rowsSorted = useMemo(() => ((setRowsSorted && sortedColumn)
+  const rowsSorted = useMemo(() => ((setRowsSorted && sortedColumn && !disableSort)
     ?
       sortByKey(
         rows,
@@ -301,6 +326,7 @@ function Table({
     : rows
   ), [
     defaultSortColumnIndex,
+    disableSort,
     getUUIDFromRow,
     rows,
     setRowsSorted,
@@ -317,20 +343,36 @@ function Table({
     ),
     [getUniqueRowIdentifier, rowsSorted],
   );
+  const query = queryFromUrl();
   const sortedColumnPrev = usePrevious(sortedColumn);
   const sortedRowIdsPrev = usePrevious(sortedRowIds);
   useEffect(() => {
-    /*
-     * The rows can change order without a change in sorting (e.g. due to a
-     * column value being updated). As a result, we need to check the row
-     * order and update the rowsSorted state in order to perform actions on
-     * the correct row.
-     */
-    if (sortableColumnIndexes
+
+    if (sortedColumn === null
+      && !query?.[MetaQueryEnum.ORDER_BY]
+      && query?.[SortQueryEnum.SORT_COL_IDX]
+      && query?.[SortQueryEnum.SORT_DIRECTION]
+    ) {
+      // Reset sort column in local storage and query params.
+      remove(localStorageKeySortColIdx);
+      remove(localStorageKeySortDirection);
+      goToWithQuery({
+        [SortQueryEnum.SORT_COL_IDX]: null,
+        [SortQueryEnum.SORT_DIRECTION]: null,
+      }, {
+        pushHistory: true,
+      });
+    } else if (sortableColumnIndexes
       && (JSON.stringify(sortedColumn) !== JSON.stringify(sortedColumnPrev)
         || JSON.stringify(sortedRowIds) !== JSON.stringify(sortedRowIdsPrev)
       )
     ) {
+      /*
+       * The rows can change order without a change in sorting (e.g. due to a
+       * column value being updated). As a result, we need to check the row
+       * order and update the rowsSorted state in order to perform actions on
+       * the correct row.
+       */
       setRowsSorted?.(rowsSorted);
       const sortColIdx = typeof sortedColumnIndex === 'number'
         ? sortedColumnIndex
@@ -344,17 +386,26 @@ function Table({
         set(localStorageKeySortDirection, sortDirection);
       }
 
+      const column = columns?.[sortColIdx]?.uuid;
+
       goToWithQuery({
-        [SortQueryEnum.SORT_COL_IDX]: sortColIdx,
-        [SortQueryEnum.SORT_DIRECTION]: sortDirection,
+        ...selectEntriesWithValues({
+          [SortQueryEnum.SORT_COL_IDX]: sortColIdx,
+          [SortQueryEnum.SORT_DIRECTION]: sortDirection,
+        }),
+        [MetaQueryEnum.ORDER_BY]: column
+          ? `${sortedColumnDirection === SortDirectionEnum.DESC ? '-' : ''}${column}`
+          : null,
       }, {
         pushHistory: true,
       });
     }
   }, [
+    columns,
     defaultSortColumnIndex,
     localStorageKeySortColIdx,
     localStorageKeySortDirection,
+    query,
     rowsSorted,
     setRowsSorted,
     sortableColumnIndexes,
@@ -369,12 +420,16 @@ function Table({
   const rowEls = useMemo(() => rowsSorted?.map((cells, rowIndex) => {
     const linkProps = buildLinkProps?.(rowIndex);
     const rowProps = buildRowProps?.(rowIndex) || {
+      cellProps: null,
       renderCell: null,
       renderRow: null,
+      rowProps: null,
     };
     const {
+      cellProps,
       renderCell,
       renderRow,
+      rowProps: rowPropsProp,
     } = rowProps;
 
     const cellEls = [];
@@ -395,10 +450,16 @@ function Table({
             maxWidth={columnMaxWidth?.(colIndex)}
             noBorder={noBorder}
             rowVerticalPadding={rowVerticalPadding}
-            selected={isSelectedRow?.(rowIndex)}
+            selected={isSelectedRow
+              ? isSelectedRow?.(rowIndex)
+              : renderExpandedRowWithObject
+                ? selectedRowIndexInternal === rowIndex
+                : null
+            }
             stickyFirstColumn={stickyFirstColumn && colIndex === 0}
             width={calculateCellWidth(colIndex)}
             wrapColumns={wrapColumns}
+            {...(cellProps || {})}
           >
             {cell}
           </TableDataStyle>
@@ -462,6 +523,7 @@ function Table({
             }
             : null
           }
+          {...(rowPropsProp || {})}
         >
           {cellEls}
         </TableRowStyle>
@@ -512,6 +574,7 @@ function Table({
     renderExpandedRowWithObject,
     rowVerticalPadding,
     rowsSorted,
+    selectedRowIndexInternal,
     setFocusedRowIndex,
     sortedColumn,   // Included in dep array so table rows re-render when sorting column changes
     stickyFirstColumn,
@@ -588,6 +651,7 @@ function Table({
                     lightBackground
                     maxWidth={tooltipWidth}
                     muted
+                    relativePosition
                     widthFitContent={fitTooltipContentWidth}
                   />
                 </Spacing>

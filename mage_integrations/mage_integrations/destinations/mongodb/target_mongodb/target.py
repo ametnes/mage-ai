@@ -46,7 +46,7 @@ class TargetMongoDb(Target):
 
         return logger
 
-    def listen_override(self, file_input: t.IO[str] | None = None) -> None:
+    def listen_override(self, file_input: t.Optional[str] = None) -> None:
         if not file_input:
             file_input = sys.stdin
 
@@ -92,10 +92,12 @@ class TargetMongoDb(Target):
         stats: dict[str, int] = defaultdict(int)
         for line in file_input.readlines():
 
-            if line.startswith('INFO'):
+            if line.startswith('{') is False:
                 continue
-
-            line_dict = json.loads(line)
+            try:
+                line_dict = json.loads(line)
+            except:
+                continue
 
             self._assert_line_requires(line_dict, requires={"type"})
 

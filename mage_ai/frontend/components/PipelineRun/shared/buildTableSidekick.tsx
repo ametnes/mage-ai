@@ -12,7 +12,7 @@ import {
 import { createBlockStatus } from '@components/Triggers/utils';
 import { isEmptyObject, isObject } from '@utils/hash';
 
-export const TABS_HEIGHT_OFFSET = 76;
+export const TABS_HEIGHT_OFFSET = 44;
 const TAB_DETAILS = { uuid: 'Run details' };
 const TAB_TREE = { uuid: 'Dependency tree' };
 export const TABS = [
@@ -105,13 +105,12 @@ export default function({
   return (
     <>
       {showTabs && (
-        <Spacing py={PADDING_UNITS}>
-          <ButtonTabs
-            onClickTab={setSelectedTab}
-            selectedTabUUID={selectedTab?.uuid}
-            tabs={TABS}
-          />
-        </Spacing>
+        <ButtonTabs
+          onClickTab={setSelectedTab}
+          selectedTabUUID={selectedTab?.uuid}
+          tabs={TABS}
+          underlineStyle
+        />
       )}
 
       {(!showTabs || TAB_TREE.uuid === selectedTab?.uuid) && (

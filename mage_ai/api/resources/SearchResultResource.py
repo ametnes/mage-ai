@@ -42,9 +42,7 @@ def filter_results(result: Dict) -> bool:
         return False
 
     if block_type in [
-        BlockType.CALLBACK,
         BlockType.CHART,
-        BlockType.CONDITIONAL,
         BlockType.EXTENSION,
     ]:
         return False
@@ -55,10 +53,10 @@ def filter_results(result: Dict) -> bool:
 class SearchResultResource(GenericResource):
     @classmethod
     async def create(self, payload: Dict, user, **kwargs):
-        pipeline_type = payload.get('pipeline_type', None)
-        query = payload.get('query', None)
-        ratio = payload.get('ratio', None)
-        search_type = payload.get('type', None)
+        pipeline_type = payload.get('pipeline_type', None) or None
+        query = payload.get('query', None) or None
+        ratio = payload.get('ratio', None) or None
+        search_type = payload.get('type', None) or None
 
         results = []
 

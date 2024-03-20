@@ -9,10 +9,8 @@ from mage_integrations.destinations.constants import (
     REPLICATION_METHOD_INCREMENTAL,
     REPLICATION_METHOD_LOG_BASED,
 )
-from mage_integrations.destinations.utils import (
-    clean_column_name,
-    update_record_with_internal_columns,
-)
+from mage_integrations.destinations.sql.utils import clean_column_name
+from mage_integrations.destinations.utils import update_record_with_internal_columns
 from mage_integrations.utils.array import batch
 from mage_integrations.utils.dictionary import merge_dict
 
@@ -39,8 +37,14 @@ class Destination(BaseDestination):
     def use_lowercase(self) -> bool:
         return self.config.get('lower_case', True)
 
+    @property
+    def allow_reserved_words(self) -> bool:
+        return self.config.get('allow_reserved_words', False)
+
     def clean_column_name(self, col):
-        return clean_column_name(col, lower_case=self.use_lowercase)
+        return clean_column_name(col,
+                                 lower_case=self.use_lowercase,
+                                 allow_reserved_words=self.allow_reserved_words)
 
     def test_connection(self) -> None:
         sql_connection = self.build_connection()
@@ -373,6 +377,7 @@ class Destination(BaseDestination):
         return self.records_inserted, self.records_updated
 
     def _wrap_with_quotes(self, name):
+        name = name.replace('"', '')
         return f'{self.quote}{name}{self.quote}'
 
 

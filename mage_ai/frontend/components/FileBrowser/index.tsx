@@ -1,4 +1,7 @@
+import * as osPath from 'path';
 import React, {
+  Dispatch,
+  SetStateAction,
   useCallback,
   useContext,
   useEffect,
@@ -8,11 +11,18 @@ import React, {
 } from 'react';
 import { ThemeContext } from 'styled-components';
 import { useMutation } from 'react-query';
+import { createPortal } from 'react-dom';
 
-import BlockType, { BlockRequestPayloadType, BlockTypeEnum } from '@interfaces/BlockType';
+import BlockType, {
+  ADD_ON_BLOCK_TYPES,
+  BlockRequestPayloadType,
+  BlockTypeEnum,
+} from '@interfaces/BlockType';
+import FileHeaderMenu from './FileHeaderMenu';
 import FileType from '@interfaces/FileType';
-import FlyoutMenu, { DEFAULT_MENU_ITEM_HEIGHT } from '@oracle/components/FlyoutMenu';
+import FlyoutMenu from '@oracle/components/FlyoutMenu';
 import Folder, { FolderSharedProps } from './Folder';
+import GradientLogoIcon from '@oracle/icons/GradientLogo';
 import NewFile from './NewFile';
 import NewFolder from './NewFolder';
 import PipelineType, { PipelineTypeEnum } from '@interfaces/PipelineType';
@@ -20,17 +30,23 @@ import PopupMenu from '@oracle/components/PopupMenu';
 import Text from '@oracle/elements/Text';
 import UploadFiles from './UploadFiles';
 import api from '@api';
+import useProject from '@utils/models/project/useProject';
+import useStatus from '@utils/models/status/useStatus';
+import {
+  CUSTOM_EVENT_NAME_FOLDER_EXPAND,
+} from '@utils/events/constants';
 import { ContainerStyle } from './index.style';
 import { ContextAreaProps } from '@components/ContextMenu';
-import {
-  FILE_EXTENSION_TO_LANGUAGE_MAPPING_REVERSE,
-} from '@interfaces/FileType';
+import { DEBUG } from '@utils/environment';
+import { DBT } from '@oracle/icons';
 import { HEADER_Z_INDEX } from '@components/constants';
+import { ProjectTypeEnum } from '@interfaces/ProjectType';
 import { UNIT } from '@oracle/styles/units/spacing';
 import { buildAddBlockRequestPayload } from '../FileEditor/utils';
-import { createPortal } from 'react-dom';
-import { getBlockFromFile, getFullPathWithoutRootFolder } from './utils';
-import { find } from '@utils/array';
+import { find, range } from '@utils/array';
+import { getBlockFromFile } from './utils';
+import { getFullPath } from '@utils/files';
+import { initiateDownload } from '@utils/downloads';
 import { onSuccess } from '@api/utils/response';
 import { useModal } from '@context/Modal';
 
@@ -38,21 +54,28 @@ const MENU_WIDTH: number = UNIT * 20;
 const MENU_ITEM_HEIGHT = 36;
 
 type FileBrowserProps = {
-  addNewBlock?: (b: BlockRequestPayloadType, cb: any) => void;
+  addNewBlock?: (b: BlockRequestPayloadType, cb: any, opts?: {
+    disableFetchingFiles?: boolean;
+  }) => void;
   blocks?: BlockType[];
-  // deleteBlockFile?: (b: BlockType) => void;
   deleteWidget?: (b: BlockType) => void;
+  disableContextMenu?: boolean;
   fetchAutocompleteItems?: () => void;
-  fetchFileTree?: () => void;
+  fetchFiles?: () => void;
   fetchPipeline?: () => void;
   files?: FileType[];
   onCreateFile?: (file: FileType) => void;
   pipeline?: PipelineType;
-  setErrors?: (opts: {
+  renderAfterContent?: (file: FileType) => any;
+  showError?: (opts: {
     errors: any;
     response: any;
   }) => void;
   setSelectedBlock?: (block: BlockType) => void;
+  setShowHiddenFiles?: Dispatch<SetStateAction<boolean>>;
+  showHiddenFilesSetting?: boolean;
+  showHiddenFiles?: boolean;
+  uuid: string;
   widgets?: BlockType[];
 } & FolderSharedProps & ContextAreaProps;
 
@@ -67,20 +90,37 @@ export enum FileContextEnum {
 function FileBrowser({
   addNewBlock,
   blocks = [],
-  // deleteBlockFile,
   deleteWidget,
+  disableContextMenu,
   fetchAutocompleteItems,
-  fetchFileTree,
+  fetchFiles: fetchFileTree,
   fetchPipeline,
   files,
+  onClickFile,
+  onClickFolder,
   onCreateFile,
+  onSelectBlockFile,
+  openFile,
+  openSidekickView,
   pipeline,
-  setErrors,
+  renderAfterContent,
+  showError,
   setSelectedBlock,
+  setShowHiddenFiles,
+  showHiddenFiles,
+  showHiddenFilesSetting,
+  uuid: uuidFileBrowser,
   widgets = [],
-  ...props
 }: FileBrowserProps, ref) {
+  const renderRef = useRef(0);
+  DEBUG(() => {
+    renderRef.current += 1;
+    console.log(`[FileBrowser][${uuidFileBrowser}]: ${renderRef.current} renders`);
+  });
+
+  const cursorRef = useRef(null);
   const timeout = useRef(null);
+  const refView = useRef(null);
   const themeContext = useContext(ThemeContext);
   const [coordinates, setCoordinates] = useState<{
     x: number;
@@ -88,9 +128,41 @@ function FileBrowser({
   }>(null);
   const [draggingFile, setDraggingFile] = useState<FileType>(null);
   const [selectedFile, setSelectedFile] = useState<FileType>(null);
+  const [reloadCount, setReloadCount] = useState(0);
+  const [highlightedMenuIndex, setHighlightedMenuIndex] = useState(null);
 
-  const { data: serverStatus } = api.statuses.list();
-  const repoPath = useMemo(() => serverStatus?.statuses?.[0]?.repo_path, [serverStatus]);
+  useEffect(() => {
+    setReloadCount(prev => prev + 1);
+  }, [files]);
+
+  const selectedFolder = useMemo(() => selectedFile && typeof selectedFile?.children !== 'undefined' && selectedFile, [
+    selectedFile,
+  ]);
+
+  const {
+    featureEnabled,
+    featureUUIDs,
+    project,
+  } = useProject();
+  const { status } = useStatus();
+
+  const [downloadFile] = useMutation(
+    (fullPath: string) => api.downloads.files.useCreate(fullPath)(),
+    {
+      onSuccess: (response: any) => onSuccess(
+        response, {
+          callback: () => {
+            const token = response.data.download.token;
+            initiateDownload(token);
+          },
+          onErrorCallback: (response, errors) => showError({
+            errors,
+            response,
+          }),
+        },
+      ),
+    },
+  );
 
   const [deleteFile] = useMutation(
     (fullPath: string) => api.files.useDelete(fullPath)(),
@@ -100,7 +172,7 @@ function FileBrowser({
           callback: () => {
             fetchFileTree?.();
           },
-          onErrorCallback: (response, errors) => setErrors({
+          onErrorCallback: (response, errors) => showError({
             errors,
             response,
           }),
@@ -117,7 +189,7 @@ function FileBrowser({
           callback: () => {
             fetchFileTree?.();
           },
-          onErrorCallback: (response, errors) => setErrors({
+          onErrorCallback: (response, errors) => showError({
             errors,
             response,
           }),
@@ -126,18 +198,75 @@ function FileBrowser({
     },
   );
 
+  const [deleteBlockFile] = useMutation(
+    ({
+      block: {
+        language,
+        type,
+        uuid,
+      },
+      file,
+      force = false,
+    }: {
+      block: BlockType;
+      file: FileType;
+      force?: boolean;
+    }) => api.blocks.useDelete(
+      encodeURIComponent(uuid), {
+        file_path: file ? encodeURIComponent(getFullPath(file)) : null,
+        force,
+      })(),
+    {
+      onSuccess: (response: any) => onSuccess(
+        response, {
+          callback: () => {
+            // fetchAutocompleteItems?.();
+            // fetchPipeline?.();
+            fetchFileTree?.();
+          },
+          onErrorCallback: (response, errors) => {
+            const {
+              error: {
+                exception,
+                message,
+              },
+            } = response;
+
+            if (message.includes('raise HasDownstreamDependencies')) {
+              showDeleteConfirmation({
+                block: selectedBlock,
+                file: selectedFile,
+                exception,
+              });
+            } else {
+              return showError({
+                errors,
+                response,
+              });
+            }
+          },
+        },
+      ),
+    },
+  );
+
   const [showDeleteConfirmation, hideDeleteConfirmation] = useModal(({
     block,
+    file,
   }: {
     block: BlockType;
+    file: FileType;
   }) => (
     <PopupMenu
       centerOnScreen
       danger
       onCancel={hideDeleteConfirmation}
       onClick={
-        () => deleteBlockFile({ block, force: true })
-          .then(() => hideDeleteConfirmation())
+        () => deleteBlockFile({
+          block,
+          file,
+          force: true,
+        }).then(() => hideDeleteConfirmation())
       }
       subtitle={
         'Deleting this block file is dangerous. This block may have dependencies ' +
@@ -149,58 +278,16 @@ function FileBrowser({
     />
   ));
 
-  const [deleteBlockFile] = useMutation(
-    ({
-      block: {
-        language,
-        type,
-        uuid,
-      },
-      force = false,
-    }: {
-      block: BlockType;
-      force?: boolean;
-    }) => {
-      let path = `${type}/${uuid}`;
-      if (language && FILE_EXTENSION_TO_LANGUAGE_MAPPING_REVERSE[language]) {
-        path = `${path}.${FILE_EXTENSION_TO_LANGUAGE_MAPPING_REVERSE[language].toLowerCase()}`;
-      }
-
-      return api.blocks.useDelete(encodeURIComponent(path), { force })();
-    },
-    {
-      onSuccess: (response: any) => onSuccess(
-        response, {
-          callback: () => {
-            fetchAutocompleteItems();
-            fetchPipeline();
-            fetchFileTree();
-          },
-          onErrorCallback: ({
-            error: {
-              exception,
-              message,
-            },
-          }) => {
-            if (message.includes('raise HasDownstreamDependencies')) {
-              showDeleteConfirmation({ block: selectedBlock, exception });
-            }
-          },
-        },
-      ),
-    },
-  );
-
   const dataExporterBlock: BlockType = find(pipeline?.blocks, ({ type }) => BlockTypeEnum.DATA_EXPORTER === type);
   const [updateDestinationBlock] = useMutation(
-    api.blocks.pipelines.useUpdate(pipeline?.uuid, dataExporterBlock?.uuid),
+    api.blocks.pipelines.useUpdate(encodeURIComponent(pipeline?.uuid), encodeURIComponent(dataExporterBlock?.uuid)),
     {
       onSuccess: (response: any) => onSuccess(
         response, {
           callback: () => {
             fetchPipeline?.();
           },
-          onErrorCallback: (response, errors) => setErrors({
+          onErrorCallback: (response, errors) => showError({
             errors,
             response,
           }),
@@ -228,9 +315,9 @@ function FileBrowser({
           const blockReqPayload = buildAddBlockRequestPayload(
             {
               ...draggingFile,
-              path: getFullPathWithoutRootFolder(draggingFile),
+              path: getFullPath(draggingFile),
             },
-            repoPath,
+            status?.repo_path,
             pipeline,
           );
 
@@ -240,7 +327,10 @@ function FileBrowser({
               require_unique_name: false,
             },
             block => {
-              if (isIntegrationPipeline && dataExporterBlock) {
+              if (isIntegrationPipeline
+                && dataExporterBlock
+                && !ADD_ON_BLOCK_TYPES.includes(block.type)
+              ) {
                 // @ts-ignore
                 updateDestinationBlock({
                   block: {
@@ -250,6 +340,9 @@ function FileBrowser({
                 });
               }
               setSelectedBlock?.(block);
+            },
+            {
+              disableFetchingFiles: true,
             },
           );
         }
@@ -280,48 +373,53 @@ function FileBrowser({
     handleClick,
     pipeline,
     ref,
-    repoPath,
     setSelectedBlock,
+    status,
     timeout,
     updateDestinationBlock,
   ]);
 
-  const pipelineBlockUuids = useMemo(() => blocks.concat(widgets).map(({ uuid }) => uuid), [
-    blocks,
-    widgets,
-  ]);
-
   const filesMemo = useMemo(() => files?.map((file: FileType) => (
     <Folder
-      {...props}
       containerRef={ref}
+      cursorRef={cursorRef}
+      disableContextMenu={disableContextMenu}
       file={file}
-      key={file.name}
+      key={`${file.name}-${reloadCount}`}
       level={0}
-      pipelineBlockUuids={pipelineBlockUuids}
+      onClickFile={onClickFile}
+      onClickFolder={onClickFolder}
+      onSelectBlockFile={onSelectBlockFile}
+      openFile={openFile}
+      reloadCount={reloadCount}
+      renderAfterContent={renderAfterContent}
       setCoordinates={setCoordinates}
       setDraggingFile={setDraggingFile}
       setSelectedFile={setSelectedFile}
       theme={themeContext}
       timeout={timeout}
+      uuidContainer={uuidFileBrowser}
     />
   )), [
+    disableContextMenu,
     files,
-    pipelineBlockUuids,
-    props,
-    ref,
-    themeContext,
-    timeout,
+    onClickFile,
+    onClickFolder,
+    openFile,
+    // These cause re-render
+    // Don’t use this for now. Just open the block as a file.
+    // This function will re-render whenever a block is added or removed to the pipeline.
+    onSelectBlockFile,
+    reloadCount,
+    renderAfterContent,
+    uuidFileBrowser,
   ]);
 
   const selectedBlock = useMemo(() => selectedFile && getBlockFromFile(selectedFile), [
     selectedFile,
   ]);
-  const draggingBlock  = useMemo(() => draggingFile && getBlockFromFile(draggingFile), [
+  const draggingBlock  = useMemo(() => draggingFile && getBlockFromFile(draggingFile, null, true), [
     draggingFile,
-  ]);
-  const selectedFolder = useMemo(() => selectedFile && typeof selectedFile?.children !== 'undefined' && selectedFile, [
-    selectedFile,
   ]);
 
   const [showModal, hideModal] = useModal(() => (
@@ -350,14 +448,14 @@ function FileBrowser({
       onCancel={hideModalNewFile}
       onCreateFile={onCreateFile}
       selectedFolder={selectedFolder}
-      setErrors={setErrors}
+      showError={showError}
     />
   ), {
   }, [
     fetchFileTree,
     onCreateFile,
     selectedFolder,
-    setErrors,
+    showError,
   ], {
     background: true,
     disableClickOutside: true,
@@ -367,20 +465,23 @@ function FileBrowser({
   const [showModalNewFolder, hideModalNewFolder] = useModal((opts: {
     file: FileType;
     moveFile?: boolean;
+    projectType?: ProjectTypeEnum;
   }) => (
     <NewFolder
       fetchFileTree={fetchFileTree}
       file={opts?.file}
       moveFile={opts?.moveFile}
       onCancel={hideModalNewFolder}
+      projectType={opts?.projectType}
       selectedFolder={selectedFolder}
-      setErrors={setErrors}
+      showError={showError}
     />
   ), {
   }, [
     fetchFileTree,
     selectedFolder,
-    setErrors,
+    showError,
+    showError,
   ], {
     background: true,
     disableClickOutside: true,
@@ -412,6 +513,18 @@ function FileBrowser({
     if (selectedFolder) {
       items.push(...[
         {
+          label: () => 'Open all files in the immediate directory',
+          onClick: () => {
+            selectedFolder?.children?.forEach((file: FileType) => {
+              if (!('children' in file)) {
+                const fp = getFullPath(selectedFolder)
+                onClickFile([fp, file?.name]?.join(osPath.sep), file);
+              }
+            });
+          },
+          uuid: 'new_folder',
+        },
+        {
           label: () => 'New folder',
           onClick: () => {
             showModalNewFolder();
@@ -435,7 +548,7 @@ function FileBrowser({
         {
           label: () => 'Delete folder',
           onClick: () => {
-            const fp = getFullPathWithoutRootFolder(selectedFolder);
+            const fp = getFullPath(selectedFolder);
             if (typeof window !== 'undefined'
               && window.confirm(
                 `Are you sure you want to delete folder ${fp} and all its subfolders and files?`,
@@ -460,8 +573,94 @@ function FileBrowser({
           },
           uuid: 'upload_files',
         },
+        {
+          label: () => 'Expand all subfolders',
+          onClick: () => {
+            const eventCustom = new CustomEvent(CUSTOM_EVENT_NAME_FOLDER_EXPAND, {
+              detail: {
+                expand: true,
+                file: selectedFile,
+                folder: selectedFolder,
+              },
+            });
+
+            if (typeof window !== 'undefined') {
+              window.dispatchEvent(eventCustom);
+            }
+          },
+          uuid: 'Expand all subfolders',
+        },
+        {
+          label: () => 'Collapse all subfolders',
+          onClick: () => {
+            const eventCustom = new CustomEvent(CUSTOM_EVENT_NAME_FOLDER_EXPAND, {
+              detail: {
+                expand: false,
+                file: selectedFile,
+                folder: selectedFolder,
+              },
+            });
+
+            if (typeof window !== 'undefined') {
+              window.dispatchEvent(eventCustom);
+            }
+          },
+          uuid: 'Collapse all subfolders',
+        },
       ]);
+
+      items.push({
+        beforeIcon: <GradientLogoIcon width={UNIT * 1.5} />,
+        onClick: () => {
+          showModalNewFolder({ projectType: ProjectTypeEnum.STANDALONE });
+        },
+        uuid: 'New Mage project',
+      });
+
+      if (featureEnabled?.(featureUUIDs?.DBT_V2)) {
+        items.push({
+          beforeIcon: <DBT />,
+          onClick: () => {
+            showModalNewFolder({ projectType: ProjectTypeEnum.DBT });
+          },
+          uuid: 'New dbt project',
+        });
+      }
     } else if (selectedFile) {
+      if (selectedFile?.path) {
+        items.push({
+          label: () => {
+            const parts = selectedFile?.path?.split(osPath.sep);
+            const count = parts?.length || 0;
+
+            return (
+              <Text muted monospace noWrapping xsmall>
+                {parts?.map((part, idx) => (
+                  <span key={`${part}_${idx}`}>
+                    {idx >= 1 && <br />}
+                    {idx >= 1 && '|'}{range(idx).map(() => '--').join('')}<Text
+                      inline
+                      monospace
+                      muted={idx <= count - 2}
+                      noWrapping
+                      xsmall
+                    >
+                      {part}
+                    </Text>{idx <= count - 2 && '/'}
+                  </span>
+                ))}
+              </Text>
+            );
+          },
+          onClick: () => onClickFile
+            ? onClickFile?.(selectedFile?.path, selectedFile) :
+            openFile
+              ? openFile?.(selectedFile?.path, selectedFile)
+              : null,
+          uuid: 'file_path',
+        });
+      }
+
       items.push(...[
         {
           label: () => 'Rename file',
@@ -476,24 +675,32 @@ function FileBrowser({
             showModalNewFile({ file: selectedFile, moveFile: true });
           },
           uuid: 'move_file',
+        }, {
+          label: () => 'Download file',
+          onClick: () => {
+            const fp = getFullPath(selectedFile);
+            downloadFile(encodeURIComponent(fp));
+          },
+          uuid: 'download_file',
         },
       ]);
 
       if (selectedBlock) {
         items.push({
-          label: () => 'Delete block file',
+          label: () => 'Delete file',
           onClick: () => {
             if (selectedBlock.type === BlockTypeEnum.CHART) {
               if (typeof window !== 'undefined'
-                && window.confirm(`Are you sure you want to delete widget ${selectedBlock.uuid}?`)
+                && window.confirm(`Are you sure you want to delete ${selectedBlock.uuid}?`)
               ) {
                 deleteWidget(selectedBlock);
               }
             } else {
+              const fp = getFullPath(selectedFile);
               if (typeof window !== 'undefined'
-                && window.confirm(`Are you sure you want to delete block ${selectedBlock.uuid}?`)
+                && window.confirm(`Are you sure you want to delete ${fp}?`)
               ) {
-                deleteBlockFile({ block: selectedBlock });
+                deleteFile(encodeURIComponent(fp));
               }
             }
           },
@@ -503,7 +710,8 @@ function FileBrowser({
         items.push({
           label: () => 'Delete file',
           onClick: () => {
-            const fp = getFullPathWithoutRootFolder(selectedFile);
+            const fp = getFullPath(selectedFile);
+
             if (typeof window !== 'undefined'
               && window.confirm(`Are you sure you want to delete file ${fp}?`)
             ) {
@@ -538,7 +746,7 @@ function FileBrowser({
             uuid="FileBrowser/ContextMenu"
             width={MENU_WIDTH}
           />
-        </div>, 
+        </div>,
         document.body,
       )
     );
@@ -548,6 +756,10 @@ function FileBrowser({
     deleteFile,
     deleteFolder,
     deleteWidget,
+    downloadFile,
+    featureEnabled,
+    featureUUIDs,
+    project,
     ref,
     showModal,
     showModalNewFile,
@@ -559,6 +771,13 @@ function FileBrowser({
 
   return (
     <ContainerStyle ref={ref}>
+      {(showHiddenFilesSetting && setShowHiddenFiles && typeof showHiddenFiles !== 'undefined') &&
+        <FileHeaderMenu
+          setShowHiddenFiles={setShowHiddenFiles}
+          showHiddenFiles={showHiddenFiles}
+        />
+      }
+
       {filesMemo}
 
       {(selectedBlock || selectedFile || selectedFolder) && menuMemo}

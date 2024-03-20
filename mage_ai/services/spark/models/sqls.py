@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import List
 
+from mage_ai.services.spark.models.applications import Application
 from mage_ai.services.spark.models.base import BaseSparkModel
 from mage_ai.services.spark.models.jobs import Job
 from mage_ai.services.spark.models.stages import StageAttempt
@@ -31,8 +32,14 @@ class Node(BaseSparkModel):
     whole_stage_codegen_id: int = None  # 2
 
     def __post_init__(self):
-        if self.metrics:
-            self.metrics = [Metric.load(**model) for model in self.metrics]
+        if self.metrics and isinstance(self.metrics, list):
+            arr = []
+            for model in self.metrics:
+                if model and isinstance(model, dict):
+                    arr.append(Metric.load(**model))
+                else:
+                    arr.append(model)
+            self.metrics = arr
 
     @property
     def id(self) -> int:
@@ -41,6 +48,7 @@ class Node(BaseSparkModel):
 
 @dataclass
 class Sql(BaseSparkModel):
+    application: Application = None
     description: str = None  # "collect at /home/src/default_repo/data_loaders/misty_thunder.py:39"
     duration: int = None  # 672
     edges: List[Edge] = field(default_factory=list)
@@ -94,19 +102,48 @@ class Sql(BaseSparkModel):
     success_job_ids: List[int] = field(default_factory=list)  # [3, 4, 5, 6]
 
     def __post_init__(self):
-        if self.edges:
-            self.edges = [Edge.load(**edge) for edge in self.edges]
 
-        if self.jobs:
-            self.jobs = [StageAttempt.load(**m) for m in self.jobs]
+        if self.application and isinstance(self.application, dict):
+            self.application = Application.load(**self.application)
 
-        if self.nodes:
-            self.nodes = [Node.load(**node) for node in self.nodes]
+        if self.edges and isinstance(self.edges, list):
+            arr = []
+            for edge in self.edges:
+                if edge and isinstance(edge, dict):
+                    arr.append(Edge.load(**edge))
+                else:
+                    arr.append(edge)
+            self.edges = arr
 
-        if self.stages:
-            self.stages = [StageAttempt.load(**m) for m in self.stages]
+        if self.jobs and isinstance(self.jobs, list):
+            arr = []
+            for m in self.jobs:
+                if m and isinstance(m, dict):
+                    arr.append(Job.load(**m))
+                else:
+                    arr.append(m)
+            self.jobs = arr
 
-        if self.status:
+        if self.nodes and isinstance(self.nodes, list):
+            arr = []
+            for node in self.nodes:
+                if node and isinstance(node, dict):
+                    arr.append(Node.load(**node))
+                else:
+                    arr.append(node)
+            self.nodes = arr
+
+        if self.stages and isinstance(self.stages, list):
+            arr = []
+            for m in self.stages:
+                if m and isinstance(m, dict):
+                    arr.append(StageAttempt.load(**m))
+                else:
+                    arr.append(m)
+
+            self.stages = arr
+
+        if self.status and isinstance(self.status, str):
             try:
                 self.status = SqlStatus(self.status)
             except ValueError as err:

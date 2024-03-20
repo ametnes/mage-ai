@@ -25,6 +25,7 @@ GitCustomBranchPolicy.allow_actions([
 GitCustomBranchPolicy.allow_read(GitBranchPresenter.default_attributes + [
     'logs',
     'remotes',
+    'access_token_exists',
 ], scopes=[
     OauthScope.CLIENT_PRIVATE
 ], on_action=[
@@ -41,6 +42,7 @@ GitCustomBranchPolicy.allow_write(GitBranchPresenter.default_attributes, scopes=
 ], condition=lambda policy: policy.has_at_least_editor_role())
 
 GitCustomBranchPolicy.allow_write(GitBranchPresenter.default_attributes + [
+    'clone',
     'delete',
     'fetch',
     'merge',
@@ -58,6 +60,7 @@ GitCustomBranchPolicy.allow_write(GitBranchPresenter.default_attributes + [
 GitCustomBranchPolicy.allow_query([
     'include_remote_branches',
     'repository',
+    'remote_url',
 ], scopes=[
     OauthScope.CLIENT_PRIVATE,
 ], on_action=[

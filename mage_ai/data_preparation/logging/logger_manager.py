@@ -9,12 +9,9 @@ from typing import Callable, Dict, List
 from mage_ai.data_preparation.logging import LoggingConfig
 from mage_ai.data_preparation.models.constants import LOGS_DIR
 from mage_ai.data_preparation.models.file import File
-from mage_ai.data_preparation.repo_manager import (
-    RepoConfig,
-    get_repo_config,
-    get_repo_path,
-)
+from mage_ai.data_preparation.repo_manager import RepoConfig, get_repo_config
 from mage_ai.data_preparation.storage.local_storage import LocalStorage
+from mage_ai.settings.repo import get_repo_path
 from mage_ai.shared.array import find
 from mage_ai.shared.dates import str_to_timedelta
 
@@ -28,6 +25,7 @@ class LoggerManager:
         logs_dir: str = None,
         pipeline_uuid: str = None,
         block_uuid: str = None,
+        filename: str = None,
         partition: str = None,
         repo_config: RepoConfig = None,
         subpartition: str = None,
@@ -48,6 +46,7 @@ class LoggerManager:
         self.logs_dir = logs_dir
         self.pipeline_uuid = pipeline_uuid
         self.block_uuid = block_uuid
+        self.filename = filename
         self.partition = partition
         self.subpartition = subpartition
 
@@ -204,7 +203,9 @@ class LoggerManager:
         if create_dir:
             self.create_log_filepath_dir(prefix)
 
-        if self.block_uuid is None:
+        if self.filename is not None:
+            log_filepath = os.path.join(prefix, self.filename)
+        elif self.block_uuid is None:
             log_filepath = os.path.join(prefix, 'pipeline.log')
         else:
             log_filepath = os.path.join(prefix, f'{self.block_uuid}.log')
@@ -262,9 +263,27 @@ class LoggerManager:
             *[file.to_dict_async(include_content=True) for file in files]
         )
 
-    def output_logs_to_destination(self):
+    def upload_logs(self, key: str, logs: str) -> None:
         """
-        Output logs to the configured destination.
+        Upload logs to the configured destination.
         (Placeholder, this function is not implemented yet.)
+
+        Args:
+            key (str): key to upload to logs to in the destination
+            logs (str): logs to upload
         """
         pass
+
+    def output_logs_to_destination(self) -> None:
+        """
+        Fetch existing logs from the destination if they exist and
+        upload logs from the stream to the configured destination.
+        """
+        if self.stream:
+            existing_logs = self.get_logs().get('content')
+            new_logs = self.stream.getvalue()
+            if existing_logs:
+                new_logs = existing_logs + '\n' + new_logs
+
+            key = self.get_log_filepath()
+            self.upload_logs(key, new_logs)

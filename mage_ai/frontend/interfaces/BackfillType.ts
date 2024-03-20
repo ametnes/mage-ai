@@ -17,14 +17,12 @@ export enum IntervalTypeEnum {
 }
 
 export const INTERVAL_TYPES = [
-  // IntervalTypeEnum.SECOND,
   IntervalTypeEnum.MINUTE,
   IntervalTypeEnum.HOUR,
   IntervalTypeEnum.DAY,
   IntervalTypeEnum.WEEK,
   IntervalTypeEnum.MONTH,
   IntervalTypeEnum.YEAR,
-  IntervalTypeEnum.CUSTOM,
 ];
 
 type PipelineRunDateType = {
@@ -32,6 +30,10 @@ type PipelineRunDateType = {
   execution_date: string;
   hr: string;
 };
+
+export interface BackfillSettingsType {
+  pipeline_run_limit: number;
+}
 
 export default interface BackfillType {
   block_uuid?: string;
@@ -49,6 +51,7 @@ export default interface BackfillType {
   pipeline_run_dates?: PipelineRunDateType[];
   pipeline_schedule_id?: number;
   pipeline_uuid: string;
+  settings?: BackfillSettingsType;
   start_datetime?: string;
   started_at?: string;
   status?: RunStatus;

@@ -2,19 +2,22 @@ import styled from 'styled-components';
 
 import dark from '@oracle/styles/themes/dark';
 import { FONT_FAMILY_REGULAR } from '@oracle/styles/fonts/primary';
-import { UNIT } from '@oracle/styles/units/spacing';
 
 export const NUMBER_OF_BUFFER_LINES = 2;
 export const SINGLE_LINE_HEIGHT = 21;
 
 export const ContainerStyle = styled.div<{
   hideDuplicateMenuItems?: boolean;
-  padding?: boolean;
+  padding?: number;
 }>`
   font-family: ${FONT_FAMILY_REGULAR};
 
-  ${props => props.padding && `
-    padding-top: ${UNIT * 2}px;
+  .context-view.monaco-menu-container {
+    background-color: ${dark.monotone.grey300};
+  }
+
+  ${props => (typeof props.padding === 'number' && props.padding > 0) && `
+    // padding-top: ${props.padding}px;
     background-color: ${(props.theme.background || dark.background).codeTextarea};
   `}
 

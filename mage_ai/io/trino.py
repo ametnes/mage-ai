@@ -1,6 +1,6 @@
 from io import StringIO
 from time import sleep
-from typing import IO, List, Mapping, Union
+from typing import IO, Dict, List, Mapping, Union
 
 import numpy as np
 import simplejson
@@ -96,6 +96,7 @@ class Trino(BaseSQL):
                 user=settings.get('user'),
                 verify=settings.get('verify'),
                 data_type_properties=settings.get('data_type_properties'),
+                overwrite_types=settings.get('overwrite_types'),
             )
 
         return cls(
@@ -118,13 +119,23 @@ class Trino(BaseSQL):
         dtypes: Mapping[str, str],
         schema_name: str,
         table_name: str,
+        auto_clean_name: bool = True,
+        case_sensitive: bool = False,
         unique_constraints: List[str] = None,
+        overwrite_types: Dict = None,
+        **kwargs,
     ):
         if unique_constraints is None:
             unique_constraints = []
         query = []
         for cname in dtypes:
-            query.append(f'"{clean_name(cname)}" {dtypes[cname]}')
+            if overwrite_types is not None and cname in overwrite_types.keys():
+                dtypes[cname] = overwrite_types[cname]
+            if auto_clean_name:
+                cleaned_col_name = clean_name(cname, case_sensitive=case_sensitive)
+            else:
+                cleaned_col_name = cname
+            query.append(f'"{cleaned_col_name}" {dtypes[cname]}')
 
         full_table_name = '.'.join(list(filter(lambda x: x, [
             schema_name,
@@ -237,8 +248,10 @@ class Trino(BaseSQL):
 
         for col in columns:
             df_col_dropna = df_[col].dropna()
-            if df_col_dropna.count() == 0:
-                continue
+            if isinstance(df_col_dropna, DataFrame):
+                if len(df_col_dropna.index) == 0:
+                    continue
+
             if dtypes[col] == PandasTypes.OBJECT \
                     or (df_[col].dtype == PandasTypes.OBJECT and not
                         isinstance(df_col_dropna.iloc[0], str)):
@@ -354,6 +367,7 @@ class Trino(BaseSQL):
                             db_dtypes,
                             schema_name,
                             table_name,
+                            overwrite_types=self.settings.get('overwrite_types'),
                         )
                         cur.execute(query)
 

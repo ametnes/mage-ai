@@ -103,7 +103,7 @@ class IntegrationBlock(Block):
                 pipeline=self.pipeline,
             ) or dict()
 
-            if stream_catalog.get('replication_method') == 'INCREMENTAL':
+            if stream_catalog.get('replication_method') in ['INCREMENTAL', 'LOG_BASED']:
                 from mage_integrations.sources.utils import (
                     update_source_state_from_destination_state,
                 )
@@ -123,7 +123,10 @@ class IntegrationBlock(Block):
                 )
                 batch_fetch_limit = get_batch_fetch_limit(config)
 
-                if stream_catalog.get('replication_method') != 'INCREMENTAL':
+                if stream_catalog.get('replication_method') == 'FULL_TABLE' or (
+                    stream_catalog.get('replication_method') == 'LOG_BASED' and
+                    not stream_catalog.get('bookmark_properties')
+                ):
                     query_data['_offset'] = batch_fetch_limit * index
                 if not is_last_block_run:
                     query_data['_limit'] = batch_fetch_limit
@@ -413,9 +416,10 @@ class SourceBlock(IntegrationBlock):
 class DestinationBlock(IntegrationBlock):
     def to_dict(
         self,
-        include_content=False,
-        include_outputs=False,
-        sample_count=None,
+        include_content: bool = False,
+        include_outputs: bool = False,
+        include_block_pipelines: bool = False,
+        sample_count: int = None,
         check_if_file_exists: bool = False,
         destination_table: str = None,
         state_stream: str = None,
@@ -439,19 +443,21 @@ class DestinationBlock(IntegrationBlock):
 
         return merge_dict(
             super().to_dict(
-                include_content,
-                include_outputs,
-                sample_count,
-                check_if_file_exists,
+                include_content=include_content,
+                include_outputs=include_outputs,
+                include_block_pipelines=include_block_pipelines,
+                sample_count=sample_count,
+                check_if_file_exists=check_if_file_exists,
             ),
             data,
         )
 
     async def to_dict_async(
         self,
-        include_content=False,
-        include_outputs=False,
-        sample_count=None,
+        include_content: bool = False,
+        include_outputs: bool = False,
+        include_block_pipelines: bool = False,
+        sample_count: int = None,
         check_if_file_exists: bool = False,
         destination_table: str = None,
         state_stream: str = None,
@@ -460,13 +466,14 @@ class DestinationBlock(IntegrationBlock):
         return self.to_dict(
             include_content=include_content,
             include_outputs=include_outputs,
+            include_block_pipelines=include_block_pipelines,
             sample_count=sample_count,
             check_if_file_exists=check_if_file_exists,
             destination_table=destination_table,
             state_stream=state_stream,
         )
 
-    def update(self, data, update_state=False):
+    def update(self, data, update_state=False, **kwargs):
         if update_state:
             from mage_ai.data_preparation.models.pipelines.integration_pipeline import (
                 IntegrationPipeline,
@@ -490,7 +497,7 @@ class DestinationBlock(IntegrationBlock):
                     bookmark_values=bookmark_values
                 )
 
-        return super().update(data)
+        return super().update(data, **kwargs)
 
     def output_variables(self, execution_partition: str = None) -> List[str]:
         return []

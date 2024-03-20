@@ -7,6 +7,9 @@ from pandas import DataFrame, read_sql
 from mage_ai.io.base import QUERY_ROW_LIMIT
 from mage_ai.io.config import BaseConfigLoader, ConfigKey
 from mage_ai.io.sql import BaseSQL
+from mage_ai.server.logger import Logger
+
+logger = Logger().new_server_logger(__name__)
 
 
 class OracleDB(BaseSQL):
@@ -17,6 +20,7 @@ class OracleDB(BaseSQL):
                  port,
                  service_name,
                  verbose: bool = False,
+                 mode: str = 'thin',
                  **kwargs) -> None:
         super().__init__(user=user,
                          password=password,
@@ -24,6 +28,7 @@ class OracleDB(BaseSQL):
                          port=port,
                          service_name=service_name,
                          verbose=verbose,
+                         mode=mode,
                          **kwargs)
 
     @classmethod
@@ -33,12 +38,22 @@ class OracleDB(BaseSQL):
             password=config[ConfigKey.ORACLEDB_PASSWORD],
             host=config[ConfigKey.ORACLEDB_HOST],
             port=config[ConfigKey.ORACLEDB_PORT],
-            service_name=config[ConfigKey.ORACLEDB_SERVICE]
+            service_name=config[ConfigKey.ORACLEDB_SERVICE],
+            mode=config[ConfigKey.ORACLEDB_MODE],
         )
 
     def open(self) -> None:
-        with self.printer.print_msg('Opening connection to OracleDB database (thin mode)'):
-            self._ctx = oracledb.connect(**self.settings)
+        if self.settings['mode'] and self.settings['mode'].lower() == 'thick':
+            logger.info('Initializing Oracle thick mode.')
+            oracledb.init_oracle_client()
+        with self.printer.print_msg(f'Opening connection to OracleDB database \
+                                    ({self.settings["mode"]} mode)'):
+            connection_dsn = "{}:{}/{}".format(
+                self.settings['host'],
+                self.settings['port'],
+                self.settings['service_name'])
+            self._ctx = oracledb.connect(
+                user=self.settings['user'], password=self.settings['password'], dsn=connection_dsn)
 
     def load(
         self,
