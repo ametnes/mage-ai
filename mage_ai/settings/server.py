@@ -1,3 +1,4 @@
+import json
 import os
 
 from .secret_generation import generate_jwt_secret
@@ -79,7 +80,7 @@ SERVER_LOGGING_TEMPLATE = os.getenv(
     '%(levelname)s:%(name)s:%(message)s',
 )
 
-INITIAL_METADATA = os.getenv('INITIAL_METADATA', '{{}}')
+INITIAL_METADATA = os.getenv('INITIAL_METADATA', json.dumps({}))
 
 DISABLE_AUTO_BROWSER_OPEN = get_bool_value(os.getenv('DISABLE_AUTO_BROWSER_OPEN', 'False'))
 
@@ -130,7 +131,7 @@ except ValueError:
     SCHEDULER_TRIGGER_INTERVAL = 10
 
 ADMIN_EMAIL = os.getenv('ADMIN_EMAIL', 'admin@admin.com')
-ADMIN_USER = os.getenv('ADMIN_USER', 'admin'),
+ADMIN_USER = os.getenv('ADMIN_USER', 'admin')
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'admin')
 
 # List of environment variables used to configure Mage. The value of these settings

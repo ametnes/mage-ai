@@ -2,6 +2,7 @@ FROM python:3.10-bookworm AS builder
 COPY . /home/mage_ai
 
 RUN cd /home/mage_ai && python setup.py sdist bdist_wheel
+RUN cd /home/mage_ai/mage_integrations && python setup.py sdist bdist_wheel
 
 FROM python:3.10-bookworm
 LABEL description="Deploy Mage on ECS"
@@ -23,6 +24,7 @@ COPY ./mage_ai/server/constants.py /tmp/constants.py
 COPY --chmod=+x ./scripts/install_other_dependencies.py ./scripts/run_app.sh /mageai/app/
 COPY requirements.txt /tmp/requirements.txt
 COPY --from=builder /home/mage_ai/dist /tmp/dist
+COPY --from=builder /home/mage_ai/mage_integrations/dist /tmp/dist
 
 ## System Packages
 RUN \
@@ -39,6 +41,9 @@ RUN \
     r-base && \
   apt-get clean && \
   rm -rf /var/lib/apt/lists/* && \
+## libssl \
+  wget http://archive.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.1_1.1.0g-2ubuntu4_amd64.deb && \
+    dpkg -i libssl1.1_1.1.0g-2ubuntu4_amd64.deb && rm libssl1.1_1.1.0g-2ubuntu4_amd64.deb && \
 ## R Packages
   R -e "install.packages('pacman', repos='http://cran.us.r-project.org')" && \
   R -e "install.packages('renv', repos='http://cran.us.r-project.org')" && \
@@ -55,14 +60,17 @@ RUN \
   pip3 install --no-cache-dir "git+https://github.com/mage-ai/dbt-mysql.git#egg=dbt-mysql" && \
   pip3 install --no-cache-dir "git+https://github.com/mage-ai/dbt-synapse.git#egg=dbt-synapse" && \
   pip3 install --no-cache-dir "git+https://github.com/mage-ai/mage-ai.git#egg=mage-integrations&subdirectory=mage_integrations" && \
+  pip3 install --no-cache-dir "git+https://github.com/mage-ai/mage-ai.git#egg=mage-ai[extra]" && \
+  pip3 install --no-cache-dir "git+https://github.com/dremio-hub/arrow-flight-client-examples.git#egg=dremio-flight&subdirectory=python/dremio-flight" && \
   # Requirements
   pip3 install --no-cache-dir -r /tmp/requirements.txt && \
   rm /tmp/requirements.txt && \
   # Install Mage
   tag=$(tail -n 1 /tmp/constants.py) && \
   VERSION=$(echo "$tag" | tr -d "'") && \
+  pip3 install "mage-ai[azure]" "mage-ai[clickhouse]" "mage-ai[dbt]" "mage-ai[google-cloud-storage]" "mage-ai[mysql]" "mage-ai[postgres]" "mage-ai[redshift]" "mage-ai[s3]" "mage-ai[snowflake]" "mage-ai[spark]" "mage-ai[streaming]" && \
   pip3 install --no-cache-dir /tmp/dist/mage-ai-$VERSION.tar.gz && \
-    pip3 install "mage-ai[azure]" "mage-ai[clickhouse]" "mage-ai[dbt]" "mage-ai[google-cloud-storage]" "mage-ai[hdf5]" "mage-ai[mysql]" "mage-ai[postgres]" "mage-ai[redshift]" "mage-ai[s3]" "mage-ai[snowflake]" "mage-ai[spark]" "mage-ai[streaming]"
+  pip3 install --no-cache-dir /tmp/dist/mage-integrations-0.0.0.tar.gz && \
   rm /tmp/constants.py && \
   # Setup user
   groupadd -g $GID -o $UNAME && \
