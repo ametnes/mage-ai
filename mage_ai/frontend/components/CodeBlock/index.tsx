@@ -37,11 +37,7 @@ import CodeEditor, {
 } from '@components/CodeEditor';
 import CodeOutput from './CodeOutput';
 import CommandButtons, { CommandButtonsSharedProps } from './CommandButtons';
-import ConfigurationOptionType, {
-  ConfigurationTypeEnum,
-  OptionTypeEnum,
-  ResourceTypeEnum,
-} from '@interfaces/ConfigurationOptionType';
+import ConfigurationOptionType from '@interfaces/ConfigurationOptionType';
 import DataIntegrationBlock from './DataIntegrationBlock';
 import DataProviderType, {
   DataProviderEnum,
@@ -177,7 +173,7 @@ import {
 import { capitalize, pluralize } from '@utils/string';
 import { convertValueToVariableDataType } from '@utils/models/interaction';
 import { executeCode } from '@components/CodeEditor/keyboard_shortcuts/shortcuts';
-import { find, indexBy, sum } from '@utils/array';
+import { find, indexBy, sum, uniqueArray } from '@utils/array';
 import { get, set } from '@storage/localStorage';
 import { getModelName } from '@utils/models/dbt';
 import { initializeContentAndMessages } from '@components/PipelineDetail/utils';
@@ -217,6 +213,7 @@ type CodeBlockProps = {
   cursorHeight2?: number;
   cursorHeight3?: number;
   dataProviders?: DataProviderType[];
+  dbtConfigurationOptions?: ConfigurationOptionType[]
   defaultValue?: string;
   disableDrag?: boolean;
   disableShortcuts?: boolean;
@@ -348,6 +345,7 @@ function CodeBlock({
   cursorHeight2,
   cursorHeight3,
   dataProviders,
+  dbtConfigurationOptions,
   defaultValue = '',
   deleteBlock,
   disableDrag,
@@ -422,7 +420,12 @@ function CodeBlock({
   } = useProject();
   const { status } = useStatus();
 
-  const codeBlockV2 = useMemo(() => featureEnabled?.(featureUUIDs.CODE_BLOCK_V2), [
+  /*
+   * Currently, only the dbt blocks are using V2 of the code block.
+   * Change "featureUUIDs.DBT_V2" for the featureEnabled property below
+   * to "featureUUIDs.CODE_BLOCK_V2" when all block types are using V2.
+   */
+  const codeBlockV2 = useMemo(() => featureEnabled?.(featureUUIDs.DBT_V2), [
     featureEnabled,
     featureUUIDs,
   ]);
@@ -755,19 +758,8 @@ function CodeBlock({
     drop: (item: BlockType) => onDrop?.(block, item),
   }), [block]);
 
-  const { data: dataConfigurationOptions } = api.configuration_options.pipelines.list(isDBT ? pipelineUUID : null, {
-    configuration_type: ConfigurationTypeEnum.DBT,
-    option_type: OptionTypeEnum.PROJECTS,
-    resource_type: ResourceTypeEnum.Block,
-    resource_uuid: BlockLanguageEnum.SQL === blockLanguage ? blockUUID : null,
-  }, {
-    revalidateOnFocus: false,
-  });
-  const configurationOptions: ConfigurationOptionType[] =
-    useMemo(() => dataConfigurationOptions?.configuration_options, [dataConfigurationOptions]);
-
-  const dbtProjects = useMemo(() => indexBy(configurationOptions || [], ({ uuid }) => uuid), [
-    configurationOptions,
+  const dbtProjects = useMemo(() => indexBy(dbtConfigurationOptions || [], ({ uuid }) => uuid), [
+    dbtConfigurationOptions,
   ]);
 
   const dbtProjectName =
@@ -776,7 +768,7 @@ function CodeBlock({
     ]);
 
   const dbtProfileData = useMemo(() => {
-    if (!configurationOptions) {
+    if (!dbtConfigurationOptions) {
       return [
         dbtProjects[dbtProjectName] || {
           target: null,
@@ -785,20 +777,26 @@ function CodeBlock({
       ];
     }
 
-    const configOpts = configurationOptions?.length === 1
-      ? configurationOptions?.[0]
-      : configurationOptions?.find(({ uuid }) => dbtProjectName === uuid);
+    const configOpts = dbtConfigurationOptions?.length === 1
+      ? dbtConfigurationOptions?.[0]
+      : dbtConfigurationOptions?.find(({ uuid }) => dbtProjectName === uuid);
 
     return configOpts?.option?.profiles || [];
   }, [
-    configurationOptions,
+    dbtConfigurationOptions,
     dbtProjectName,
     dbtProjects,
   ]);
 
-  const dbtProfileTargets = useMemo(() => {
-    return (dbtProfileData || [])?.reduce((acc, { targets }) => acc.concat(targets || []), []);
-  }, [dbtProfileData]);
+  const dbtProfileTargets = useMemo(() =>
+    uniqueArray(
+      (dbtProfileData || [])?.reduce(
+        (acc, { targets }) => acc.concat(targets || []),
+        [],
+      ),
+    ),
+    [dbtProfileData],
+  );
 
   const dbtProfileTarget = useMemo(() => dataProviderConfig[CONFIG_KEY_DBT_PROFILE_TARGET], [
     dataProviderConfig,
@@ -1388,6 +1386,7 @@ function CodeBlock({
     blocks,
     codeCollapsed,
     content,
+    dbtConfigurationOptions,
     deleteBlock: deleteBlockCallback,
     disableShortcuts,
     executionState,
